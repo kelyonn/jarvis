@@ -1,0 +1,796 @@
+# Fast-path intents: matched with plain regexes (no LLM round trip) for short, unambiguous commands.
+# Anything that doesn't match fully falls through to the tool-calling agent, so adding a pattern here
+# is only ever a latency optimisation. If the tool fails, the agent takes over as well.
+#
+# Fields: patterns (regex, matched against normalised text), tool, args ({group} templates),
+#         reply ({group}, {result}), scale (multiply numeric group "n"), follow_up (default true).
+
+- name: learn_voice
+  patterns:
+    - '^(?:please )?(?:learn|recogni[sz]e|train|enrol|enroll|remember|set up|setup) (?:my )?voice(?: recognition)?$'
+    - '^(?:please )?(?:set up|setup|turn on|start) voice (?:recognition|id|identification)$'
+    - '^(?:please )?(?:learn|get to know|teach yourself) (?:who i am|my voice)$'
+  tool: learn_my_voice
+  args: {}
+  reply: "{result}"
+  follow_up: true
+
+- name: forget_voice
+  patterns:
+    - '^(?:please )?(?:forget|delete|reset|remove) my voice(?: print| recognition)?$'
+    - '^(?:please )?(?:turn off|stop|disable) voice (?:recognition|id|identification)$'
+  tool: forget_my_voice
+  args: {}
+  reply: "{result}"
+  follow_up: false
+
+- name: timer_status
+  patterns:
+    - '^(?:where are we|how are we|what(?:s| is) the (?:status|state)|how(?:s| is)) (?:with |of |on )?(?:the |my )?(?:timer|timers)(?: now)?$'
+    - '^(?:how (?:much )?(?:time|long) (?:is )?(?:left|remaining)(?: on (?:the|my) timer)?|how long (?:until|till) (?:the|my) timer(?: (?:goes off|is up|ends))?|time left)$'
+    - '^(?:what timers (?:do i have|are (?:running|set))|any timers(?: running)?|is (?:the|my) timer (?:still )?running)$'
+    - '^(?:(?:the|my) )?timers?$'
+    - '^(?:how (?:much|long)(?: time)?|what(?:s| is)) (?:is )?(?:left|remaining) (?:in|on|for) (?:the|my|that) .{0,40}?(?:timer|one)$'
+    - '^(?:check|show|list) (?:the |my )?timers?$'
+  tool: timer_list
+  args: {}
+  reply: "{result}"
+
+- name: play_playlist
+  patterns:
+    - '^(?:please )?(?:open (?:spotify|music) (?:and |then )?)?(?:play|put on|start|queue up|queue) (?:the |my |our )?(?P<name>.+?) playlist(?: (?:on spotify|in spotify|from (?:my|the) [a-z0-9 ]*folder|in (?:my|the) [a-z0-9 ]*folder))*$'
+    - '^(?:please )?(?:open (?:spotify|music) (?:and |then )?)?(?:play|put on|start) (?:my |the )?playlist (?P<name>.+?)(?: (?:on spotify|from (?:my|the) [a-z0-9 ]*folder|in (?:my|the) [a-z0-9 ]*folder))?$'
+    - '^(?:please )?(?:open (?:spotify|music) (?:and |then )?)?(?:play|put on|start) (?:the |my )?(?P<name>.+?) (?:from|in) (?:my|the) (?:[a-z0-9 ]+ )?folder$'
+  tool: play_my_playlist
+  args: {name: "{name}"}
+  reply: "{result}"
+  follow_up: false
+
+- name: shuffle_playlist
+  patterns:
+    - '^(?:please )?(?:open (?:spotify|music) (?:and |then )?)?shuffle (?:the |my |our )?(?P<name>.+?)(?: playlist)?$'
+  tool: play_my_playlist
+  args: {name: "{name}", shuffle: "true"}
+  reply: "{result}"
+  follow_up: false
+
+- name: play_liked
+  patterns:
+    - '^(?:please )?(?:play|put on|start|shuffle) (?:my )?(?:liked|favou?rite|saved) (?:songs|tracks|music)$'
+  tool: play_liked_songs
+  args: {}
+  reply: "{result}"
+  follow_up: false
+
+- name: play_music
+  patterns:
+    - '^(?:please )?(?:open|launch|start) (?:spotify|music|apple music) (?:and |then )?(?:play|put on) (?!.*\b(?:youtube|video|game|netflix|movie)\b)(?P<query>.+)$'
+    - '^(?:please )?(?:play|put on|start playing) (?!(?:pause|music|the music|something|anything)$)(?!.*\b(?:youtube|video|game|netflix|movie)\b)(?P<query>.+?)(?: (?:on|in|using|with|via) (?P<app>spotify|apple music|music))?$'
+  tool: play_music
+  args: {query: "{query}", app: "{app}"}
+  reply: "{result}"
+  follow_up: false
+
+- name: routine
+  patterns:
+    - '^(?:start|run|activate|begin|enable|switch to) (?:my |the )?(?P<name>[a-z ]{2,30}?)(?: mode| routine| setup)$'
+    - '^(?:work|focus|study|dev|morning|evening|meeting) mode$'
+  tool: run_routine
+  args: {name: "{name}"}
+  reply: "{result}"
+
+- name: alarm_set
+  patterns:
+    - '^(?:set|make|create|add|start) (?:me )?(?:an? )?(?P<label>[a-z ]{2,20}? )?alarm (?:for|at|to) (?P<time>.+)$'
+    - '^(?:set|make|create|add) (?:me )?(?:an? )?alarm$'
+    - '^(?:wake me(?: up)?|alarm me) (?:at|for) (?P<time>.+)$'
+  tool: alarm_set
+  args: {time: "{time}", label: "{label}"}
+  reply: "{result}"
+  follow_up: false
+
+- name: open_messaging_app
+  patterns:
+    - '^(?:open|pull up|bring up|go to) (?:a |the |my )?(?:chat|chats|conversations?) (?:on|in) (?P<name>whatsapp|imessage)$'
+  tool: open_app
+  args: {name: "{name}"}
+  reply: "Opening {name}, sir."
+
+- name: open_chat
+  patterns:
+    - '^(?:open|pull up|show|bring up|go to) (?:my |the )?(?P<app>whatsapp|imessage|messages) (?:chat|conversation|thread|dm) (?:with|for|of) (?P<person>.+)$'
+    - '^(?:open|pull up|show|bring up|go to) (?:my |the )?(?:chat|conversation|thread|dm) (?:with|for|of) (?P<person>.+?)(?: (?:on|in) (?P<app>whatsapp|imessage|messages))?$'
+    - '^(?:open|pull up|show|bring up|go to) (?P<person>.+?)(?:s)? (?P<app>whatsapp|imessage) (?:chat|conversation|thread)$'
+    - '^(?:open|pull up|show|bring up|go to) (?P<person>.+?)(?:s)? (?:chat|conversation|thread|dm)(?: (?:on|in) (?P<app>whatsapp|imessage|messages))?$'
+    - '^(?:open|pull up|show|bring up|go to) (?P<person>.+?) (?:on|in) (?P<app>whatsapp|imessage)$'
+  tool: open_chat
+  args: {person: "{person}", app: "{app}"}
+  reply: "{result}"
+  follow_up: false
+
+- name: close_tab
+  patterns:
+    - '^(?:close|kill|shut|get rid of) (?:this|the|current|that|my current) (?:browser |chrome |safari )?tab$'
+  tool: close_tab
+  args: {}
+  reply: "{result}"
+  follow_up: false
+
+- name: close_window
+  patterns:
+    - '^close (?:this|the|current|that|front|my current) window$'
+    - '^close (?:the )?window of (?P<app>[a-z0-9 .+\-]{2,30})$'
+  tool: window_close
+  args: {app: "{app}"}
+  reply: "{result}"
+  follow_up: false
+
+- name: minimize_window
+  patterns:
+    - '^minimi[sz]e(?: (?:this|the|current|that) window| (?:this|it))?$'
+    - '^minimi[sz]e (?:the )?(?P<app>[a-z0-9 .+\-]{2,30}?)(?: window)?$'
+  tool: window_minimize
+  args: {app: "{app}"}
+  reply: "{result}"
+  follow_up: false
+
+- name: fullscreen_window
+  patterns:
+    - '^(?:go |make (?:this|it) )?full ?screen$'
+    - '^(?:make|put) (?:this|the|it)(?: window)? full ?screen$'
+  tool: window_fullscreen
+  args: {app: "", "on": "true"}
+  reply: "{result}"
+  follow_up: false
+
+- name: quit_everything
+  patterns:
+    - '^(?:quit|close|shut down|exit) (?:all|every|everything)(?: (?:the |my |open )?(?:apps|applications|programs))?$'
+    - '^(?:quit|close) (?:all|every) (?:other )?(?:apps|applications|programs)$'
+  tool: quit_all_apps
+  args: {}
+  reply: "{result}"
+  follow_up: false
+
+- name: open_folder
+  patterns:
+    - '^(?:open|show|go to|pull up|bring up) (?:me )?(?:my |the )?(?P<path>desktop|downloads|documents|pictures|movies|home)(?: folder| directory)?$'
+    - '^(?:open|show|go to|pull up) (?:my |the )?(?P<path>music) (?:folder|directory)$'
+  tool: open_path
+  args: {path: "{path}"}
+  reply: "{result}"
+  follow_up: false
+
+- name: open_site
+  patterns:
+    - '^(?:open|go to|launch|pull up|bring up|take me to) (?:the )?(?P<name>youtube|gmail|github|google|twitter|reddit|netflix|linkedin|facebook|instagram|amazon|chatgpt|claude|stack ?overflow|wikipedia|google drive|google maps|google docs|google sheets|google calendar|overleaf|leetcode|hacker news|twitch)(?: website| site| in (?:the |my )?browser| on (?:the )?web)?$'
+  tool: open_site
+  args: {name: "{name}"}
+  reply: "{result}"
+  follow_up: false
+
+- name: open_domain
+  patterns:
+    - '^(?:open|go to|launch|pull up|visit|take me to) (?:the )?(?:website |site )?(?P<url>(?:https?://)?[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.(?:com|org|net|io|dev|ai|in|co|edu|gov|app|me|xyz)(?:/\S*)?)$'
+  tool: open_url
+  args: {url: "{url}"}
+  reply: "{result}"
+  follow_up: false
+
+- name: focus_browser_tab
+  patterns:
+    - '^(?:switch|go|jump|flip) to (?:the |my )?(?P<match>.+?) tab$'
+  tool: browser_focus_tab
+  args: {match: "{match}"}
+  reply: "{result}"
+  follow_up: false
+
+- name: wifi_toggle
+  patterns:
+    - '^(?:turn|switch) (?P<on>on|off) (?:the |my )?wi-?fi$'
+    - '^(?:turn|switch) (?:the |my )?wi-?fi (?P<on>on|off)$'
+  tool: wifi
+  args: {action: "{on}"}
+  reply: "{result}"
+
+- name: wifi_enable
+  patterns:
+    - '^enable (?:the |my )?wi-?fi$'
+  tool: wifi
+  args: {action: "on"}
+  reply: "{result}"
+
+- name: wifi_disable
+  patterns:
+    - '^disable (?:the |my )?wi-?fi$'
+  tool: wifi
+  args: {action: "off"}
+  reply: "{result}"
+
+- name: bluetooth_toggle
+  patterns:
+    - '^(?:turn|switch) bluetooth (?P<on>on|off)$'
+  tool: bluetooth
+  args: {action: "{on}"}
+  reply: "{result}"
+
+- name: weather_in
+  patterns:
+    - '^(?:what(?:s| is) the )?(?:weather|forecast|temperature) (?:like )?(?:in|for|at) (?P<city>[a-z .\-]{2,40}?)(?: (?P<day>today|tomorrow))?$'
+    - '^(?:how(?:s| is) the weather) (?:in|at) (?P<city>[a-z .\-]{2,40}?)(?: (?P<day>today|tomorrow))?$'
+  tool: get_weather
+  args: {city: "{city}", day: "{day}"}
+  reply: "{result}"
+
+- name: remind_me
+  patterns:
+    - '^remind me (?:to |about |that )?(?P<title>.+?) (?P<when>(?:at|in|on|by|tomorrow|tonight|next|this|every) .+)$'
+    - '^remind me (?:to |about )?(?P<title>.+?) (?P<when>tomorrow|tonight)$'
+  tool: reminder_create
+  args: {title: "{title}", when: "{when}"}
+  reply: "{result}"
+  follow_up: false
+
+- name: remind_me_in
+  patterns:
+    - '^remind me (?P<when>in (?:\d+(?:\.\d+)?|a|an|one|two|three|four|five|ten|fifteen|twenty|thirty|forty five|sixty|half an?) (?:seconds?|minutes?|mins?|hours?|hrs?|days?)) (?:to |about |that )(?P<title>.+)$'
+  tool: reminder_create
+  args: {title: "{title}", when: "{when}"}
+  reply: "{result}"
+  follow_up: false
+
+- name: remind_me_later
+  patterns:
+    - '^remind me (?:to |about )(?P<title>.+)$'
+  tool: reminder_create
+  args: {title: "{title}"}
+  reply: "{result}"
+  follow_up: false
+
+- name: note_create
+  patterns:
+    - '^(?:add|make|create|take|write|jot down|save)(?: me)? (?:a |an )?note (?:that |saying |called |titled |to |about )?(?P<title>.+)$'
+    - '^(?:note|jot) (?:down )?(?:that )?(?P<title>.+)$'
+  tool: note_create
+  args: {title: "{title}"}
+  reply: "{result}"
+  follow_up: false
+
+- name: list_reminders
+  patterns:
+    - '^(?:list|show|read|check)(?: me)? (?:my |the |all my )?(?:open |pending |upcoming )?reminders$'
+    - '^what(?:s| are| is) (?:on )?my (?:open |pending |upcoming )?(?:reminders|to-?do(?: list)?)$'
+    - '^what do i have to remember$'
+  tool: reminder_list
+  args: {}
+  reply: "{result}"
+
+- name: read_clipboard
+  patterns:
+    - '^(?:what(?:s| is) (?:on|in) my clipboard|read (?:my |the )?clipboard|what did i (?:just )?copy)$'
+  tool: clipboard_read
+  args: {}
+  reply: "{result}"
+
+- name: network_info
+  patterns:
+    - '^(?:what(?:s| is) my (?:ip|ip address|wi-?fi|network)|am i (?:online|connected)(?: to (?:the )?(?:internet|wi-?fi))?|network (?:status|info))$'
+  tool: network_info
+  args: {}
+  reply: "{result}"
+
+- name: top_cpu
+  patterns:
+    - '^what(?:s| is) (?:eating|using|hogging|taking up|slowing down) (?:my |the )?(?:cpu|processor|mac)$'
+    - '^what(?:s| is) using (?:the )?most cpu$'
+    - '^top processes$'
+  tool: top_processes
+  args: {by: cpu}
+  reply: "{result}"
+
+- name: top_memory
+  patterns:
+    - '^what(?:s| is) (?:eating|using|hogging|taking up) (?:my |the )?(?:memory|ram)$'
+    - '^what(?:s| is) using (?:the )?most (?:memory|ram)$'
+  tool: top_processes
+  args: {by: memory}
+  reply: "{result}"
+
+- name: open_settings
+  patterns:
+    - '^(?:open|show|go to|pull up) (?:the |my )?(?P<pane>wi-?fi|network|bluetooth|display|displays|sound|battery|notifications|keyboard|trackpad|mouse|storage|wallpaper|privacy|security|accessibility|control center|login items|software update|date and time)(?: settings| preferences)$'
+    - '^(?:open|show|go to|pull up) (?:the |my )?(?:system )?(?:settings|preferences)$'
+  tool: open_settings
+  args: {pane: "{pane}"}
+  reply: "{result}"
+  follow_up: false
+
+- name: open_app
+  patterns:
+    - '^(?:open|launch|start|fire up|bring up|pull up)(?: up)? (?:the |my )?(?P<name>[a-z0-9][a-z0-9 .+\-]{1,38}?)(?: app| application)?$'
+  tool: open_app
+  args: {name: "{name}"}
+  reply: "Opening {name}, sir."
+
+- name: focus_app
+  patterns:
+    - '^(?:switch|go) to (?:the )?(?P<name>[a-z0-9][a-z0-9 .+\-]{1,38}?)(?: app)?$'
+  tool: focus_app
+  args: {name: "{name}"}
+  reply: "{name} is up, sir."
+
+- name: quit_app
+  patterns:
+    - '^(?:quit|close|exit|kill|shut down) (?:the )?(?P<name>[a-z0-9][a-z0-9 .+\-]{1,38}?)(?: app)?$'
+  tool: quit_app
+  args: {name: "{name}"}
+  reply: "Closing {name}, sir."
+
+- name: volume_set
+  patterns:
+    - '^(?:set )?(?:the )?(?:volume|sound)(?: level)?(?: to| at)? (?P<level>\d{1,3})(?: ?%| percent)?$'
+    - '^turn (?:the )?(?:volume|sound) to (?P<level>\d{1,3})(?: ?%| percent)?$'
+  tool: set_volume
+  args: {level: "{level}"}
+  reply: "Volume at {level} percent."
+
+- name: volume_up
+  patterns:
+    - '^(?:turn (?:it |the volume |the sound )?up|volume up|louder|raise the volume|increase the volume|a bit louder)$'
+  tool: change_volume
+  args: {direction: up, amount: "15"}
+  reply: "Louder, sir."
+
+- name: volume_down
+  patterns:
+    - '^(?:turn (?:it |the volume |the sound )?down|volume down|quieter|lower the volume|decrease the volume|a bit quieter|softer)$'
+  tool: change_volume
+  args: {direction: down, amount: "15"}
+  reply: "Quieter, sir."
+
+- name: mute
+  patterns:
+    - '^(?:mute|mute (?:the )?(?:sound|volume|audio|mac)|silence the mac)$'
+  tool: mute_volume
+  args: {"on": "true"}
+  reply: "Muted, sir."
+
+- name: unmute
+  patterns:
+    - '^(?:unmute|unmute (?:the )?(?:sound|volume|audio|mac))$'
+  tool: mute_volume
+  args: {"on": "false"}
+  reply: "Sound is back, sir."
+
+- name: brightness_up
+  patterns:
+    - '^(?:brightness up|brighter|(?:turn|raise|increase) (?:the )?(?:screen |display )?brightness up|make (?:it|the screen) brighter)$'
+  tool: change_brightness
+  args: {direction: up}
+  reply: "Brighter, sir."
+
+- name: brightness_down
+  patterns:
+    - '^(?:brightness down|dimmer|(?:turn|lower|decrease) (?:the )?(?:screen |display )?brightness down|make (?:it|the screen) dimmer)$'
+  tool: change_brightness
+  args: {direction: down}
+  reply: "Dimmer, sir."
+
+- name: brightness_set
+  patterns:
+    - '^(?:set )?(?:the )?(?:screen |display )?brightness (?:to |at )?(?P<level>\d{1,3})(?: ?%| percent)?$'
+  tool: set_brightness
+  args: {level: "{level}"}
+  reply: "Brightness at {level} percent."
+
+- name: media_pause
+  patterns:
+    - '^(?:pause|hold)(?: (?:the |my )?(?:music|song|track|playback|spotify|it))?$'
+    - '^stop (?:the |my )?(?:music|song|track|playback|spotify)$'
+  tool: media_control
+  args: {action: pause}
+  reply: "Right away, sir."
+  follow_up: false
+
+- name: media_play
+  patterns:
+    - '^(?:play|resume|continue|unpause)(?: (?:the |my )?(?:music|song|track|playback|spotify|it))?$'
+    - '^(?:keep|carry) (?:on )?playing$'
+  tool: media_control
+  args: {action: play}
+  reply: "Right away, sir."
+  follow_up: false
+
+- name: media_toggle
+  patterns:
+    - '^(?:play pause|play/pause|toggle (?:the )?(?:music|playback))$'
+  tool: media_control
+  args: {action: toggle}
+  reply: "Right away, sir."
+  follow_up: false
+
+- name: media_next
+  patterns:
+    - '^(?:next|next song|next track|skip|skip (?:this )?(?:song|track))$'
+  tool: media_control
+  args: {action: next}
+  reply: "Skipping, sir."
+  follow_up: false
+
+- name: media_previous
+  patterns:
+    - '^(?:previous|previous song|previous track|go back|last song|last track)$'
+  tool: media_control
+  args: {action: previous}
+  reply: "Going back, sir."
+  follow_up: false
+
+- name: now_playing
+  patterns:
+    - '^(?:what(?:s| is) (?:this song|playing|this track|currently playing)|what song is this|what(?:s| is) playing right now)$'
+  tool: now_playing
+  args: {}
+  reply: "{result}"
+
+- name: time
+  patterns:
+    - '^(?:what(?:s| is) the time|what time is it|(?:tell me )?the time|what(?:s| is) the date|what(?:s| is) (?:the )?date today|what day is it(?: today)?|what(?:s| is) today(?:s)? date|what(?:s| is) the day today)$'
+  tool: current_time
+  args: {}
+  reply: "{result}"
+
+- name: storage
+  patterns:
+    - '^(?:how much (?:storage|disk space|space|free space)(?: do i (?:have|got))?(?: (?:left|free))?|how much (?:storage|space) is (?:left|free)|(?:disk|storage) space|how full is my (?:disk|drive|mac))$'
+  tool: system_status
+  args: {}
+  reply: "{result}"
+
+- name: battery
+  patterns:
+    - '^(?:how(?:s| is) (?:my |the )?battery(?: doing)?|battery(?: level| status| percentage)?|what(?:s| is) (?:my |the )?battery(?: level| at)?|how much battery (?:do i have|is left)(?: left)?)$'
+  tool: battery_status
+  args: {}
+  reply: "{result}"
+
+- name: lock
+  patterns:
+    - '^(?:lock(?: (?:the |my )?(?:screen|mac|laptop|computer))?|lock up)$'
+  tool: lock_screen
+  args: {}
+  reply: "Locking, sir."
+  follow_up: false
+
+- name: screenshot_window
+  patterns:
+    - '^(?:take|grab|capture) (?:a )?(?:screenshot|screen shot) of (?:this|the|that) window$'
+    - '^screenshot (?:this|the) window$'
+  tool: take_screenshot
+  args: {target: window}
+  reply: "{result}"
+
+- name: screenshot
+  patterns:
+    - '^(?:take|grab|capture) (?:a )?(?:screenshot|screen shot)(?: of (?:my |the )?screen)?$'
+    - '^screenshot$'
+  tool: take_screenshot
+  args: {target: screen}
+  reply: "{result}"
+
+- name: focus_on
+  patterns:
+    - '^(?:turn on|enable|start) (?:do not disturb|dnd)$'
+    - '^do not disturb(?: on)?$'
+  tool: set_focus
+  args: {state: "on"}
+  reply: "{result}"
+
+- name: focus_off
+  patterns:
+    - '^(?:turn off|disable|stop|end) (?:do not disturb|dnd|focus)(?: mode)?$'
+    - '^do not disturb off$'
+  tool: set_focus
+  args: {state: "off"}
+  reply: "{result}"
+
+- name: dark_mode
+  patterns:
+    - '^(?:turn |switch )?(?:on |to )?dark mode(?: on)?$'
+    - '^(?:turn |switch )(?:to )?dark (?:mode|appearance)$'
+  tool: dark_mode
+  args: {mode: "on"}
+  reply: "Dark mode on, sir."
+
+- name: light_mode
+  patterns:
+    - '^(?:turn |switch )?(?:on |to )?light mode(?: on)?$'
+    - '^(?:turn |switch )?(?:off )dark mode$'
+    - '^dark mode off$'
+  tool: dark_mode
+  args: {mode: "off"}
+  reply: "Light mode, sir."
+
+- name: timer_seconds
+  patterns:
+    - '^(?:set |start )?(?:a |an )?timer (?:for |of )?(?P<n>\d+(?:\.\d+)?|a|an|one|two|three|four|five|ten|fifteen|twenty|thirty|forty five|forty|fifty|sixty) ?(?:seconds?|secs?)$'
+    - '^(?:set |start )?(?:a |an )?(?P<n>\d+(?:\.\d+)?|a|an|one|two|three|four|five|ten|fifteen|twenty|thirty|forty five|forty|fifty|sixty)[ -](?:seconds?|secs?)(?: timer)?$'
+  tool: timer_set
+  args: {seconds: "{n}"}
+  reply: "Timer set, sir."
+  follow_up: false
+
+- name: timer_minutes_seconds
+  patterns:
+    - '^(?:set |start )?(?:a |an )?timer (?:for |of )?(?P<m>\d+) ?(?:minutes?|mins?)(?: and)? (?P<s>\d+) ?(?:seconds?|secs?)$'
+  tool: timer_set
+  args: {minutes: "{m}", seconds: "{s}"}
+  reply: "Timer set, sir."
+  follow_up: false
+
+- name: timer_minutes
+  patterns:
+    - '^(?:set |start )?(?:a |an )?timer (?:for |of )?(?P<n>\d+(?:\.\d+)?|a|an|one|two|three|four|five|ten|fifteen|twenty|thirty|forty five|forty|sixty) ?(?:minutes?|mins?)$'
+    - '^(?:set |start )?(?:a |an )?(?P<n>\d+(?:\.\d+)?|a|an|one|two|three|four|five|ten|fifteen|twenty|thirty|forty five|forty|sixty)[ -](?:minutes?|mins?)(?: timer)?$'
+  tool: timer_set
+  args: {minutes: "{n}"}
+  reply: "Timer set for {n} minutes, sir."
+
+- name: timer_hours
+  patterns:
+    - '^(?:set |start )?(?:a |an )?timer (?:for |of )?(?P<n>\d+(?:\.\d+)?|a|an|one|two|three) ?(?:hours?|hrs?)$'
+    - '^(?:set |start )?(?:a |an )?(?P<n>\d+(?:\.\d+)?|a|an|one|two|three)[ -](?:hours?|hrs?)(?: timer)?$'
+  tool: timer_set
+  scale: 60
+  args: {minutes: "{n}"}
+  reply: "Timer set, sir."
+
+- name: timer_cancel
+  patterns:
+    - '^(?:cancel|stop|clear|delete) (?:the |my |all )?(?:timers?|alarms?)$'
+  tool: timer_cancel
+  args: {}
+  reply: "Timer cancelled, sir."
+
+- name: snap_window
+  patterns:
+    - '^(?:snap|put|move|place|tile) (?:the )?(?P<app>[a-z0-9][a-z0-9 .+\-]{1,30}?) (?:window )?(?:to|on|at|in) (?:the )?(?P<pos>left(?: half| side| third)?|right(?: half| side| third)?|top(?: half| left| right)?|bottom(?: half| left| right)?|center|centre|middle|full ?screen|maximi[sz]e|upper left|upper right|lower left|lower right)$'
+    - '^(?:maximi[sz]e) (?:the )?(?P<app>[a-z0-9][a-z0-9 .+\-]{1,30}?)(?: window)?(?P<pos>)$'
+  tool: window_snap
+  args: {app: "{app}", position: "{pos}"}
+  reply: "Done, sir."
+
+- name: bluetooth_on
+  patterns:
+    - '^(?:turn on|enable|switch on) bluetooth$'
+  tool: bluetooth
+  args: {action: "on"}
+  reply: "Bluetooth is on, sir."
+
+- name: bluetooth_off
+  patterns:
+    - '^(?:turn off|disable|switch off) bluetooth$'
+  tool: bluetooth
+  args: {action: "off"}
+  reply: "Bluetooth is off, sir."
+
+- name: connect_airpods
+  patterns:
+    - '^connect (?:to )?(?:my )?(?:airpods|headphones|earbuds)$'
+  tool: bluetooth_device
+  args: {}
+  reply: "{result}"
+
+- name: system_status
+  patterns:
+    - '^(?:system status|how(?:s| is) (?:my |the )?(?:mac|computer|laptop|system)(?: doing)?|how(?:s| is) (?:my |the )?(?:mac|computer|laptop) running)$'
+  tool: system_status
+  args: {}
+  reply: "{result}"
+
+- name: brief_delta
+  patterns:
+    - '^(?:what did i miss|catch me up|any updates|what(?:s| is) new|update me|anything new)$'
+  tool: brief_me
+  args: {mode: delta}
+  reply: "{result}"
+
+- name: brief_me
+  patterns:
+    - '^(?:brief me|give me (?:a |my |the )?(?:brief(?:ing)?|rundown|update)|(?:my |the )?(?:daily |morning |evening )?brief(?:ing)?|run me through my day|start (?:my )?(?:day|briefing))$'
+  tool: brief_me
+  args: {mode: full}
+  reply: "{result}"
+
+- name: weather_tomorrow
+  patterns:
+    - '^(?:what(?:s| is) the weather(?: like)? tomorrow|weather tomorrow|will it rain tomorrow|what(?:s| is) tomorrows weather|how(?:s| is) the weather tomorrow)$'
+  tool: get_weather
+  args: {day: tomorrow}
+  reply: "{result}"
+
+- name: weather
+  patterns:
+    - '^(?:what(?:s| is) the weather(?: like)?(?: today| now| right now| outside)?|how(?:s| is) the weather(?: today| outside)?|weather(?: today| now)?|is it (?:raining|going to rain)(?: today| now| outside)?|will it rain(?: today)?|how(?:s| is) it outside)$'
+  tool: get_weather
+  args: {}
+  reply: "{result}"
+
+- name: markets
+  patterns:
+    - '^(?:how are the markets(?: doing| today)?|how(?:s| is) the market(?:s)?(?: doing| today)?|markets?(?: update| status| summary)?|what(?:s| is) the market(?:s)? (?:doing|like)|how(?:s| is) the stock market)$'
+  tool: get_markets
+  args: {}
+  reply: "{result}"
+
+- name: news_india
+  patterns:
+    - '^(?:(?:indian|india) news|news (?:in|from) india|what(?:s| is) happening in india)$'
+  tool: get_news
+  args: {topic: india}
+  reply: "{result}"
+
+- name: news_tech
+  patterns:
+    - '^(?:tech news|news (?:in|from) tech(?:nology)?|what(?:s| is) new in tech|technology news)$'
+  tool: get_news
+  args: {topic: tech}
+  reply: "{result}"
+
+- name: news
+  patterns:
+    - '^(?:what(?:s| is) the news|(?:the )?news|any news|(?:give me )?(?:the )?headlines|what(?:s| is) happening in the world|world news)$'
+  tool: get_news
+  args: {topic: world}
+  reply: "{result}"
+
+- name: calendar_tomorrow
+  patterns:
+    - '^(?:what(?:s| is) on my (?:calendar|schedule) tomorrow|my (?:calendar|schedule) tomorrow|do i have (?:any )?(?:meetings|events) tomorrow)$'
+  tool: gcal_agenda
+  args: {day: tomorrow}
+  reply: "{result}"
+
+- name: calendar
+  patterns:
+    - '^(?:what(?:s| is) (?:on )?my (?:calendar|schedule)(?: today)?|my (?:schedule|calendar)(?: today)?|do i have (?:any )?(?:meetings|events)(?: today)?|what does my day look like|what(?:s| is) on today|what(?:s| is) my day look like)$'
+  tool: gcal_agenda
+  args: {day: today}
+  reply: "{result}"
+
+- name: read_alerts
+  patterns:
+    - '^(?:any alerts|any new alerts|read (?:my |the )?alerts|what(?:s| is) pending|anything urgent|any urgent alerts)$'
+  tool: read_alerts
+  args: {}
+  reply: "{result}"
+
+- name: snooze_alerts_minutes
+  patterns:
+    - '^(?:snooze|mute|hold|pause) (?:the |my )?alerts (?:for )?(?P<n>\d+(?:\.\d+)?|a|an|one|two|three|five|ten|fifteen|twenty|thirty|forty five|forty|sixty) ?(?:minutes?|mins?)$'
+    - '^(?:do not|dont) disturb me for (?P<n>\d+(?:\.\d+)?|a|an|one|two|three|five|ten|fifteen|twenty|thirty|forty five|forty|sixty) ?(?:minutes?|mins?)$'
+  tool: snooze_alerts
+  args: {minutes: "{n}"}
+  reply: "{result}"
+
+- name: snooze_alerts_hours
+  patterns:
+    - '^(?:snooze|mute|hold|pause) (?:the |my )?alerts (?:for )?(?P<n>\d+(?:\.\d+)?|a|an|one|two|three|four) ?(?:hours?|hrs?)$'
+    - '^(?:do not|dont) disturb me for (?P<n>\d+(?:\.\d+)?|a|an|one|two|three|four) ?(?:hours?|hrs?)$'
+  tool: snooze_alerts
+  scale: 60
+  args: {minutes: "{n}"}
+  reply: "{result}"
+
+- name: resume_alerts
+  patterns:
+    - '^(?:resume|unmute|unsnooze|restore) (?:the |my )?alerts$'
+  tool: snooze_alerts
+  args: {minutes: "0"}
+  reply: "{result}"
+
+- name: read_whatsapp
+  patterns:
+    - '^(?:read|check|show|any) (?:me )?(?:my |the )?(?:new |unread )?whatsapps?(?: messages?)?$'
+    - '^(?:do i have|have i got|are there) (?:any )?(?:new |unread )?whatsapps?(?: messages?)?$'
+  tool: read_messages
+  args: {source: whatsapp}
+  reply: "{result}"
+
+- name: read_imessage
+  patterns:
+    - '^(?:read|check|show|any) (?:me )?(?:my |the )?(?:new |unread )?(?:imessages?|texts?|sms)$'
+    - '^(?:do i have|have i got|are there) (?:any )?(?:new |unread )?(?:imessages?|texts?)$'
+  tool: read_messages
+  args: {source: imessage}
+  reply: "{result}"
+
+- name: read_email
+  patterns:
+    - '^(?:read|check|show|any) (?:me )?(?:my |the )?(?:new |unread )?(?:e-?mails?|mail|inbox)$'
+    - '^(?:do i have|have i got|are there) (?:any )?(?:new |unread )?(?:e-?mails?|mail)$'
+  tool: read_messages
+  args: {source: gmail}
+  reply: "{result}"
+
+- name: read_all_messages
+  patterns:
+    - '^(?:read|check|show|any) (?:me )?(?:my |the )?(?:new |unread )?messages$'
+    - '^(?:do i have|have i got|are there) (?:any )?(?:new |unread )?messages$'
+    - '^any new messages$'
+  tool: read_messages
+  args: {source: all}
+  reply: "{result}"
+
+- name: check_linkedin
+  patterns:
+    - '^(?:check|read|any|anything on|whats on) (?:my |the )?(?:new |unread )?linkedin(?: messages?)?$'
+    - '^(?:do i have|have i got) (?:any )?(?:new |unread )?linkedin(?: messages?)?$'
+  tool: check_linkedin
+  args: {}
+  reply: "{result}"
+
+- name: discard_draft
+  patterns:
+    - '^(?:discard|cancel|scrap|forget|delete) (?:the |that |this )?draft$'
+  tool: discard_draft
+  args: {}
+  reply: "{result}"
+
+- name: decline_offer
+  patterns:
+    - '^(?:not now|maybe later|not right now|later)$'
+  tool: decline_offer
+  args: {}
+  reply: "{result}"
+
+- name: describe_screen
+  patterns:
+    - '^(?:what(?:s| is) on (?:my |the )?screen|describe (?:my |the )?screen|what am i looking at|read (?:my |the )?screen|look at (?:my |the )?screen|what(?:s| is) this)$'
+  tool: describe_screen
+  args: {}
+  reply: "{result}"
+
+- name: explain_screen
+  patterns:
+    - '^(?:explain|what does) (?:this|that) (?:error|message|warning|screen|page)(?: mean)?$'
+    - '^(?:what(?:s| is)) (?:this|that) (?:error|warning)$'
+  tool: describe_screen
+  args: {question: "Explain this error or message simply and say what to do about it."}
+  reply: "{result}"
+
+- name: remember
+  patterns:
+    - '^remember(?: that)? (?P<text>.{3,200})$'
+    - '^make a note that (?P<text>.{3,200})$'
+  tool: remember
+  args: {text: "{text}"}
+  reply: "{result}"
+
+- name: forget_that
+  patterns:
+    - '^forget (?:that|it|what i just said|what i just told you)$'
+  tool: forget
+  args: {}
+  reply: "{result}"
+
+- name: forget_about
+  patterns:
+    - '^forget (?:everything )?(?:you know )?about (?P<q>.{2,60})$'
+  tool: forget
+  args: {query: "{q}"}
+  reply: "{result}"
+
+- name: recall_me
+  patterns:
+    - '^what do you (?:know|remember)(?: about me)?$'
+  tool: recall
+  args: {}
+  reply: "{result}"
+
+- name: recall_about
+  patterns:
+    - '^what do you (?:know|remember) about (?P<q>(?!me$).{2,60})$'
+  tool: recall
+  args: {query: "{q}"}
+  reply: "{result}"
+
