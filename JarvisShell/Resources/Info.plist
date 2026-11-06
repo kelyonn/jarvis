@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key><string>com.jarvis.shell</string>
+    <key>CFBundleName</key><string>Jarvis</string>
+    <key>CFBundleDisplayName</key><string>Jarvis</string>
+    <key>CFBundleExecutable</key><string>JarvisShell</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>LSUIElement</key><true/>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Jarvis listens for "Hey Jarvis" and your voice commands. Audio is processed on this Mac.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Jarvis checks whether the camera is in use so it does not interrupt your video calls.</string>
+    <key>NSLocationUsageDescription</key>
+    <string>Jarvis uses your approximate location for local weather.</string>
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>Jarvis uses your approximate location for local weather.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Jarvis uses your approximate location for local weather.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Jarvis turns Bluetooth on and off and connects your headphones when you ask.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Jarvis controls apps such as Messages, Notes, Reminders and Music when you ask it to.</string>
+    <key>NSContactsUsageDescription</key>
+    <string>Jarvis looks up contacts so it can draft messages to the right person.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>Jarvis reads your calendar for briefings and meeting alerts.</string>
+    <key>NSRemindersUsageDescription</key>
+    <string>Jarvis reads and creates reminders when you ask.</string>
+</dict>
+</plist>
