@@ -1,8 +1,10 @@
 """Spotify: the user's own library (playlists, including ones inside folders, liked songs) and playback.
 
-Catalogue search works with just a client id/secret (see ``media._spotify_token``). Private playlists need the user to
-sign in once (``jarvisd spotify-login``): the refresh token goes to the Keychain, never to disk or logs. The Web API
-does not expose folders, but it lists every playlist flat, so a playlist inside a folder is found by its name.
+Catalogue search works with just a client id/secret (see ``media._spotify_token``). Private playlists, and queueing
+or reading the queue, need the user to sign in once (``jarvisd spotify-login``): the refresh token goes to the
+Keychain, never to disk or logs. The Web API does not expose folders, but it lists every playlist flat, so a
+playlist inside a folder is found by its name. Queueing needs ``user-modify-playback-state``: anyone who signed in
+before that scope was added needs to run ``jarvisd spotify-login`` again.
 """
 
 from __future__ import annotations
@@ -17,10 +19,11 @@ import httpx
 
 from jarvis_core import secrets
 from jarvis_core.errors import SkillError
-from jarvis_core.skills.base import E, S, Tool, ToolContext, ToolRegistry, obj
+from jarvis_core.skills.base import B, E, S, Tool, ToolContext, ToolRegistry, obj
 
 REDIRECT_URI = "http://127.0.0.1:8888/callback"
-SCOPES = "playlist-read-private playlist-read-collaborative user-library-read"
+SCOPES = ("playlist-read-private playlist-read-collaborative user-library-read "
+          "user-modify-playback-state user-read-playback-state")
 _cache: dict[str, Any] = {"token": None, "exp": 0.0, "playlists": None, "playlists_at": 0.0}
 
 
@@ -167,6 +170,56 @@ async def _play_liked(ctx: ToolContext, a: dict[str, Any]) -> str:
     return "Playing your liked songs."
 
 
+async def _queue_song(ctx: ToolContext, a: dict[str, Any]) -> str:
+    from jarvis_core.skills.media import _spotify_find
+
+    q = (a.get("query") or "").strip()
+    if not q:
+        raise SkillError("What should I queue, sir?")
+    await _ensure_running(ctx)
+    token = await user_token()
+    found = await _spotify_find(token, q)
+    if not found:
+        raise SkillError(f"I couldn't find {q} on Spotify, sir.")
+    uri, spoken = found
+    async with httpx.AsyncClient(timeout=10, headers={"Authorization": f"Bearer {token}"}) as c:
+        r = await c.post("https://api.spotify.com/v1/me/player/queue", params={"uri": uri})
+    if r.status_code == 403:
+        raise SkillError("Spotify needs you to sign in again for this, sir. Run jarvisd spotify-login.")
+    if r.status_code == 404:
+        raise SkillError("Spotify needs to already be playing before I can queue anything, sir.")
+    if r.status_code not in (200, 204):
+        raise SkillError(f"Spotify wouldn't queue that, sir ({r.status_code}).")
+    return f"Queued {spoken}."
+
+
+async def _list_queue(ctx: ToolContext, a: dict[str, Any]) -> str:
+    token = await user_token()
+    async with httpx.AsyncClient(timeout=10, headers={"Authorization": f"Bearer {token}"}) as c:
+        r = await c.get("https://api.spotify.com/v1/me/player/queue")
+    if r.status_code != 200:
+        raise SkillError("I couldn't read your Spotify queue, sir.")
+    items = r.json().get("queue") or []
+    if not items:
+        return "Nothing queued, sir."
+    names = [f"{t['name']} by {t['artists'][0]['name']}" for t in items[:5]]
+    return "Up next: " + ", ".join(names) + "."
+
+
+async def _set_shuffle(ctx: ToolContext, a: dict[str, Any]) -> str:
+    await _ensure_running(ctx)
+    on = a.get("on", True)
+    await ctx.osa(f'tell application "Spotify" to set shuffling to {"true" if on else "false"}')
+    return "Shuffle on." if on else "Shuffle off."
+
+
+async def _set_repeat(ctx: ToolContext, a: dict[str, Any]) -> str:
+    await _ensure_running(ctx)
+    on = a.get("on", True)
+    await ctx.osa(f'tell application "Spotify" to set repeating to {"true" if on else "false"}')
+    return "Repeat on." if on else "Repeat off."
+
+
 def register(reg: ToolRegistry) -> None:
     reg.register(Tool(
         "play_my_playlist",
@@ -180,6 +233,19 @@ def register(reg: ToolRegistry) -> None:
         obj({"filter": S("Optional word to filter by")}), _list_playlists, category="media", timeout_s=30))
     reg.register(Tool(
         "play_liked_songs", "Play the user's Spotify liked songs.", obj(), _play_liked, category="media"))
+    reg.register(Tool(
+        "queue_song", "Add a SONG, ARTIST or ALBUM to the end of the current Spotify queue, without interrupting "
+        "what's playing. Spotify must already be playing something.",
+        obj({"query": S("Song, artist or album")}, ["query"]), _queue_song, category="media", timeout_s=20))
+    reg.register(Tool(
+        "list_spotify_queue", "List what's coming up next in the Spotify queue.",
+        obj(), _list_queue, category="media"))
+    reg.register(Tool(
+        "set_spotify_shuffle", "Turn Spotify shuffle on or off.",
+        obj({"on": B("true to shuffle, false to turn off")}, ["on"]), _set_shuffle, category="media"))
+    reg.register(Tool(
+        "set_spotify_repeat", "Turn Spotify repeat on or off.",
+        obj({"on": B("true to repeat, false to turn off")}, ["on"]), _set_repeat, category="media"))
 
 
 __all__ = ["register", "auth_url", "exchange_code", "all_playlists", "best_playlists", "E"]

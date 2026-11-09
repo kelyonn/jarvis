@@ -59,3 +59,55 @@ async def test_not_signed_in_gives_clear_message(monkeypatch):
     monkeypatch.setattr(spotify.secrets, "get_secret", lambda k, **kw: "x" if k != "SPOTIFY_REFRESH_TOKEN" else None)
     with pytest.raises(spotify.SkillError, match="spotify-login"):
         await spotify.user_token()
+
+
+class _Ctx:
+    async def osa(self, script, *args, **kw):
+        return ""
+
+
+@respx.mock
+async def test_queue_song_finds_and_queues_it(monkeypatch):
+    import jarvis_core.skills.media as media
+
+    respx.post("https://accounts.spotify.com/api/token").mock(
+        return_value=Response(200, json={"access_token": "tok", "expires_in": 3600}))
+    queued = []
+
+    async def fake_find(token, q):
+        return "spotify:track:zzz", "Clair de Lune by Debussy"
+
+    async def noop(ctx):
+        return None
+
+    monkeypatch.setattr(spotify, "_ensure_running", noop)
+    monkeypatch.setattr(media, "_spotify_find", fake_find)
+
+    def _record(request):
+        queued.append(request.url.params.get("uri"))
+        return Response(200)
+
+    respx.post("https://api.spotify.com/v1/me/player/queue").mock(side_effect=_record)
+    out = await spotify._queue_song(_Ctx(), {"query": "clair de lune"})
+    assert out == "Queued Clair de Lune by Debussy."
+    assert queued == ["spotify:track:zzz"]
+
+
+@respx.mock
+async def test_queue_song_reports_no_active_device(monkeypatch):
+    import jarvis_core.skills.media as media
+
+    respx.post("https://accounts.spotify.com/api/token").mock(
+        return_value=Response(200, json={"access_token": "tok", "expires_in": 3600}))
+    respx.post("https://api.spotify.com/v1/me/player/queue").mock(return_value=Response(404))
+
+    async def fake_find(token, q):
+        return "spotify:track:zzz", "Some Song"
+
+    async def noop(ctx):
+        return None
+
+    monkeypatch.setattr(spotify, "_ensure_running", noop)
+    monkeypatch.setattr(media, "_spotify_find", fake_find)
+    with pytest.raises(spotify.SkillError, match="playing"):
+        await spotify._queue_song(_Ctx(), {"query": "some song"})
