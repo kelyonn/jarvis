@@ -105,15 +105,52 @@ def check_disk() -> Check:
     return Check("disk space", OK, f"{free:.0f} GB free")
 
 
-def check_calendar_contacts() -> Check:
+TERMINAL_NOTE = " (checked from this terminal, which is not the program Jarvis runs as)"
+DAEMON_NOTE = " (checked by the running Jarvis itself)"
+
+
+def daemon_program() -> str:
+    """The exact program the daemon runs as: this is what Full Disk Access has to be granted to when Jarvis.app alone isn't enough."""
+    return str(Path(sys.executable).resolve())
+
+
+def check_calendar_contacts(note: str = TERMINAL_NOTE) -> Check:
     from jarvis_core.adapters import apple_data
 
     try:
         apple_data._open(apple_data.CAL_DB).close()
-        return Check("Calendar", OK, "readable")
+        return Check("Calendar", OK, "readable" + note)
     except Exception:  # noqa: BLE001
-        return Check("Calendar", WARN, "can't read the Calendar database (checked from this terminal; Jarvis.app needs its own grant)",
-                     "Privacy & Security -> Full Disk Access -> add Jarvis")
+        fix = "Privacy & Security -> Full Disk Access -> add Jarvis"
+        if note == DAEMON_NOTE:
+            fix = f"Full Disk Access -> + -> press Cmd+Shift+G and add this exact file: {daemon_program()}"
+        return Check("Calendar", WARN, "can't read the Calendar database" + note, fix)
+
+
+ACCESS_FILE = "access.json"
+ACCESS_MAX_AGE_S = 900
+
+
+def write_access_report(cfg: Config) -> None:
+    """Called inside the running daemon: what *it* can read, so ``jarvisd doctor`` reports on the real process."""
+    checks = [check_calendar_contacts(DAEMON_NOTE), *check_full_disk(cfg, DAEMON_NOTE)]
+    payload = {"pid": os.getpid(), "ts": time.time(), "checks": [c.__dict__ for c in checks]}
+    path = paths.run_dir() / ACCESS_FILE
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    tmp.replace(path)
+
+
+def load_access_report() -> list[Check] | None:
+    """The daemon's own access results, if a live daemon wrote them recently."""
+    try:
+        data = json.loads((paths.run_dir() / ACCESS_FILE).read_text(encoding="utf-8"))
+        os.kill(int(data["pid"]), 0)  # raises if that daemon is gone
+        if time.time() - float(data["ts"]) > ACCESS_MAX_AGE_S:
+            return None
+        return [Check(**c) for c in data["checks"]]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def check_shell_app() -> list[Check]:
@@ -161,16 +198,16 @@ def check_shell_app() -> list[Check]:
     return out
 
 
-def check_full_disk(cfg: Config) -> list[Check]:
-    """Checked from *this* terminal. The Jarvis app needs its own Full Disk Access grant."""
+def check_full_disk(cfg: Config, note: str = TERMINAL_NOTE) -> list[Check]:
+    """From this terminal by default; the daemon runs it on itself (note=DAEMON_NOTE) so the answer is about the real process."""
     from jarvis_core.policy.presence import read_focus
 
     out: list[Check] = []
-    note = " (checked from this terminal; Jarvis.app needs its own grant)"
+    where = f"Full Disk Access -> + -> press Cmd+Shift+G and add this exact file: {daemon_program()}" if note == DAEMON_NOTE else ""
     on, _ = read_focus()
     out.append(Check("Focus detection", OK, "readable" + note) if on is not None
                else Check("Focus detection", WARN, "can't read Focus state: alerts won't know when you're in Focus" + note,
-                          "System Settings → Privacy & Security → Full Disk Access → add Jarvis"))
+                          where or "System Settings → Privacy & Security → Full Disk Access → add Jarvis"))
     apps = set(cfg.messaging.apps)
     readers: list[tuple[str, Any]] = []
     if "whatsapp" in apps:
@@ -187,9 +224,9 @@ def check_full_disk(cfg: Config) -> list[Check]:
         except Exception as e:
             ok, reason = False, str(e)
         if ok:
-            out.append(Check(label, OK, "database readable and schema recognised"))
+            out.append(Check(label, OK, "database readable and schema recognised" + note))
         elif "Full Disk Access" in reason:
-            out.append(Check(label, WARN, reason + note, "Privacy & Security → Full Disk Access → add Jarvis (and your terminal for this check)"))
+            out.append(Check(label, WARN, reason + note, where or "Privacy & Security → Full Disk Access → add Jarvis (and your terminal for this check)"))
         else:
             out.append(Check(label, WARN, reason or "unavailable", "Open the app once so its database exists; if the schema changed, Jarvis disables it safely"))
     return out
@@ -391,9 +428,10 @@ async def collect_checks(*, llm: Any | None = None, network: bool = True) -> lis
         checks.extend(await check_nim(cfg, llm))
     checks.extend(check_voice_stack(cfg))
     checks.extend(check_brew_tools())
-    checks.append(check_calendar_contacts())
+    access = load_access_report()  # prefer what the running daemon itself can read over what this terminal can read
+    checks.extend(access[:1] if access else [check_calendar_contacts()])
     checks.extend(check_shell_app())
-    checks.extend(check_full_disk(cfg))
+    checks.extend(access[1:] if access else check_full_disk(cfg))
     gm = check_gmail(cfg)
     if gm:
         checks.append(gm)

@@ -81,6 +81,7 @@ async def build_runtime(cfg: Config, *, standalone: bool, ipc_file: str | None) 
         frontend.on_shell_lost = daemon.request_stop  # type: ignore[attr-defined]
     rt = Runtime(cfg, daemon, frontend, assistant)
     _attach_housekeeping(rt)
+    _attach_access_report(rt)
     _attach_memory(rt, llm)
     _attach_briefing(rt, llm)
     _attach_comms(rt, llm)
@@ -204,6 +205,26 @@ def _attach_memory(rt: Runtime, llm) -> None:
     rt.daemon.hooks.on_turn_done.append(EpisodeRecorder(mem, enabled=rt.cfg.memory.episodes).on_turn_done)
     rt.extras.update(memory=mem, extractor=extractor)
     rt.closers.append(mem.close)
+
+
+def _attach_access_report(rt: Runtime) -> None:
+    """Every few minutes, record what this daemon process can read (Calendar, Messages, WhatsApp, Focus) for ``jarvisd doctor``."""
+    import asyncio
+
+    from jarvis_core import doctor
+
+    async def loop() -> None:
+        while True:
+            try:
+                await asyncio.get_running_loop().run_in_executor(None, doctor.write_access_report, rt.cfg)
+            except Exception:  # noqa: BLE001 - a diagnostic must never take Jarvis down
+                log.debug("access report failed", exc_info=True)
+            await asyncio.sleep(300)
+
+    async def on_ready() -> None:
+        rt.extras["access_task"] = asyncio.create_task(loop(), name="access-report")
+
+    rt.daemon.hooks.on_ready.append(on_ready)
 
 
 def _attach_housekeeping(rt: Runtime) -> None:
