@@ -101,7 +101,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
-        client.onTTS = { [weak self] f in self?.audio.enqueue(f) }
+        // Audio goes through the main queue like the play_begin/play_end controls, so the chunks always land after
+        // their utterance has started. Played straight from the socket queue they raced ahead of play_begin whenever
+        // the main thread was busy (laying out the orb card, say) and were dropped: Jarvis went silent half the time.
+        client.onTTS = { [weak self] f in DispatchQueue.main.async { self?.audio.enqueue(f) } }
         client.onControl = { [weak self] c in DispatchQueue.main.async { self?.route(c) } }
     }
 

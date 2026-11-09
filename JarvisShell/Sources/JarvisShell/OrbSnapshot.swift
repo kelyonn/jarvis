@@ -83,8 +83,13 @@ enum OrbSelfTest {
     @MainActor static func run() {
         var failures = 0
         func check(_ name: String, _ ok: Bool) { print(ok ? "PASS" : "FAIL", name); if !ok { failures += 1 } }
-        let defaults = UserDefaults.standard
-        defaults.removeObject(forKey: "orbPinnedV2")
+        // Run against a scratch settings suite so the test never changes your real orb position or pin.
+        let defaults = UserDefaults(suiteName: "com.jarvis.shell.selftest")!
+        defaults.removePersistentDomain(forName: "com.jarvis.shell.selftest")
+        OrbPanel.store = defaults
+        defer { defaults.removePersistentDomain(forName: "com.jarvis.shell.selftest") }
+        check("orb is kept on screen by default", OrbPanel().pinned)
+        defaults.set(false, forKey: "orbPinnedV3")
         let p = OrbPanel()
         check("hidden at start", !p.wantsVisible)
         p.apply(state: "listening", caption: nil)
@@ -112,7 +117,6 @@ enum OrbSelfTest {
         p.handle("hide")
         check("pinned orb stays but the box can be closed", p.wantsVisible && !p.model.cardVisible)
         p.pinned = false
-        defaults.removeObject(forKey: "orbPinnedV2")
 
         // The orb must stay exactly where it is while the conversation opens, grows, shrinks and closes, wherever it sits.
         func settle() { RunLoop.current.run(until: Date().addingTimeInterval(0.45)) }
@@ -171,7 +175,20 @@ enum OrbSelfTest {
         let g = OrbPanel()
         g.apply(state: "listening", caption: nil); g.showCaption("hello", final: true); g.showCaption("Hi.", final: false)
         g.orderFrontRegardless(); g.stepAside()
-        check("Jarvis drops behind other windows when you click another app", g.model.ghost && g.level == .normal)
+        check("never drops behind while Jarvis is busy", !g.model.ghost && g.level == .floating)
+        g.apply(state: "idle", caption: nil); g.stepAside()
+        check("a finished conversation drops behind other windows when you click another app", g.model.ghost && g.level == .normal)
+        g.apply(state: "announcing", caption: nil)
+        check("an alert brings it back on top", !g.model.ghost && g.level == .floating)
+        g.apply(state: "idle", caption: nil); g.stepAside()
+        g.showRich("**done**")
+        check("a formatted reply brings it back on top", !g.model.ghost && g.level == .floating)
+        g.apply(state: "idle", caption: nil); g.stepAside()
+        g.announce("Battery at 10%")
+        check("an announcement brings it back on top", !g.model.ghost && g.level == .floating)
+        g.handle("hide"); g.apply(state: "idle", caption: nil); g.apply(state: "speaking", caption: nil)
+        check("Jarvis speaking after you closed the box opens it again", g.model.cardVisible && g.wantsVisible)
+        g.apply(state: "idle", caption: nil); g.stepAside()
         g.handle("toggle_card")
         check("tapping the orb brings it back on top with the card", !g.model.ghost && g.level == .floating && g.model.cardVisible)
         g.stepAside(); g.showCaption("again", final: true)

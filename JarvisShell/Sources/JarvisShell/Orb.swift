@@ -342,9 +342,14 @@ final class OrbPanel: NSPanel {
     private var host: FirstClickHostingView!
     private var bag = Set<AnyCancellable>()
 
+    /// Where the orb keeps its settings. The self-test swaps in a scratch suite so it never touches your real ones.
+    static var store = UserDefaults.standard
+    private static let pinKey = "orbPinnedV3"
+
+    /// The orb stays on screen unless you turn "Keep orb on screen" off in the menu bar icon.
     var pinned: Bool {
-        get { UserDefaults.standard.bool(forKey: "orbPinnedV2") }
-        set { UserDefaults.standard.set(newValue, forKey: "orbPinnedV2"); refreshVisibility() }
+        get { Self.store.object(forKey: Self.pinKey) as? Bool ?? true }
+        set { Self.store.set(newValue, forKey: Self.pinKey); refreshVisibility() }
     }
 
     init() {
@@ -446,10 +451,36 @@ final class OrbPanel: NSPanel {
             let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             if app?.processIdentifier != ProcessInfo.processInfo.processIdentifier { self?.stepAside() }
         }
+        // A display was plugged, unplugged or rearranged: bring the orb back onto a screen that exists.
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.keepOnScreen()
+        }
+        // Switching desktops or entering a full-screen app: make sure the orb is drawn on the new one.
+        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.wantsVisible, !self.model.ghost else { return }
+            self.orderFrontRegardless()
+        }
+    }
+
+    private var screenObserver: NSObjectProtocol?
+    private var spaceObserver: NSObjectProtocol?
+
+    func keepOnScreen() {
+        if !NSScreen.screens.contains(where: { $0.frame.contains(orbCenter) }) {
+            orbCenter = Self.defaultCenter(.br)
+            saveCenter()
+        }
+        updateAlignment()
+        relayout()
+        if wantsVisible && !model.ghost { orderFrontRegardless() }
     }
 
     func stepAside() {
-        guard isVisible, !model.typing, !model.ghost else { return }
+        // Never while Jarvis is listening, thinking, talking, asking you something or showing a message: only a finished
+        // conversation (or the idle orb) drops behind the app you clicked.
+        guard isVisible, !model.typing, !model.ghost, !model.state.isBusy, model.state != .error, model.notice.isEmpty else { return }
         model.ghost = true
         level = .normal
         orderBack(nil)
@@ -513,15 +544,15 @@ final class OrbPanel: NSPanel {
     }
 
     private static func savedCenter() -> NSPoint? {
-        let d = UserDefaults.standard
+        let d = store
         guard d.object(forKey: "orbCenterX") != nil else { return nil }
         let p = NSPoint(x: d.double(forKey: "orbCenterX"), y: d.double(forKey: "orbCenterY"))
         return NSScreen.screens.contains { $0.frame.contains(p) } ? p : nil
     }
 
     private func saveCenter() {
-        UserDefaults.standard.set(Double(orbCenter.x), forKey: "orbCenterX")
-        UserDefaults.standard.set(Double(orbCenter.y), forKey: "orbCenterY")
+        Self.store.set(Double(orbCenter.x), forKey: "orbCenterX")
+        Self.store.set(Double(orbCenter.y), forKey: "orbCenterY")
     }
 
     /// Card extends toward the middle of the screen so it never runs off an edge.
@@ -674,7 +705,9 @@ final class OrbPanel: NSPanel {
 
     func apply(state name: String, caption: String?) {
         let new = OrbStateName(rawValue: name) ?? model.state
-        if new == .listening || new == .confirming || new == .error { model.dismissed = false; comeBack() }
+        let startsSomething = (new.isBusy && new != .followUp && !model.state.isBusy) || new == .listening || new == .confirming || new == .error
+        if startsSomething { model.dismissed = false }  // you closed the box; new activity opens it again
+        if new.isBusy || new == .error { comeBack() }  // anything Jarvis is doing is shown on top, never behind windows
         model.state = new
         clearWork?.cancel()
         if let caption {
@@ -689,6 +722,7 @@ final class OrbPanel: NSPanel {
     /// Show a message with the orb for a few seconds regardless of state.
     func announce(_ text: String) {
         model.dismissed = false
+        comeBack()
         flash(seconds: 8)
         model.notice = text
         clearWork?.cancel()
@@ -700,7 +734,8 @@ final class OrbPanel: NSPanel {
 
     /// `final` is what you said; the other captions are Jarvis's reply growing sentence by sentence.
     func showCaption(_ text: String, final: Bool) {
-        if final { model.dismissed = false; comeBack() }  // your next question brings the box back
+        if final { model.dismissed = false }  // your next question brings the box back
+        comeBack()  // and a reply is never hidden behind other windows
         if final {
             model.messages.append(ChatLine(fromUser: true, text: text))
             model.messages.append(ChatLine(fromUser: false, text: ""))
@@ -720,6 +755,7 @@ final class OrbPanel: NSPanel {
         let text = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         model.dismissed = false
+        comeBack()
         if let last = model.messages.last, !last.fromUser {
             model.messages[model.messages.count - 1].rich = text
         } else {

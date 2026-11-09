@@ -41,6 +41,8 @@ final class AudioEngine {
     private var pending = 0
     private var ended = false
     private var micAllowed = true
+    private var epoch = 0                           // bumped when the output is rebuilt; old completion callbacks are ignored
+    private var unplayed: [AVAudioPCMBuffer] = []   // scheduled but not yet heard, so a rebuild can replay them
 
     /// Frames are dropped when false (muted / laptop closed). The device itself is closed by the caller.
     var micEnabled: Bool {
@@ -93,12 +95,35 @@ final class AudioEngine {
     }
 
     @objc private func playbackConfigChanged() {
-        // Output device changed (headphones, AirPods). The engine has stopped itself; the next sound restarts it.
+        // The output changed (headphones, AirPods switching to call mode when the mic opens, another app grabbing the
+        // device). This used to cut Jarvis off mid-sentence. Now the output is rebuilt on the new device and whatever
+        // had not been heard yet is played again, so the reply carries on.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.lock.lock(); let busy = self.current != nil; self.lock.unlock()
-            if busy { self.stopAll() }
+            self.lock.lock()
+            let busy = self.current != nil
+            self.epoch += 1
+            let gen = self.generation, ep = self.epoch
+            let replay = self.unplayed
+            self.lock.unlock()
+            self.player.stop()
+            self.earconPlayer.stop()
             self.engine.stop()
+            guard busy else { return }  // nothing playing: the next sound restarts the engine
+            guard self.ensurePlayback() else {
+                NSLog("Jarvis audio: output could not be restarted after a device change")
+                self.stopAll()
+                return
+            }
+            NSLog("Jarvis audio: output changed mid-reply; resuming \(replay.count) chunks")
+            for buf in replay { self.schedule(buf, gen: gen, epoch: ep) }
+            self.player.play()
+        }
+    }
+
+    private func schedule(_ buf: AVAudioPCMBuffer, gen: Int, epoch ep: Int) {
+        player.scheduleBuffer(buf, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            self?.chunkDone(gen, epoch: ep, buf)
         }
     }
 
@@ -244,6 +269,7 @@ final class AudioEngine {
         current = id
         pending = 0
         ended = false
+        unplayed = []
         lock.unlock()
         if let old, old != id { onPlayback?(old, "interrupted") }
         guard ensurePlayback() else {
@@ -257,24 +283,29 @@ final class AudioEngine {
     }
 
     func enqueue(_ frame: TTSFrame) {
-        lock.lock()
-        guard current == frame.utteranceId else { lock.unlock(); return }
-        let gen = generation
-        pending += 1
-        lock.unlock()
-
         let samples = int16ToFloat(frame.pcm16)
         guard !samples.isEmpty,
               let buf = AVAudioPCMBuffer(pcmFormat: playFormat, frameCapacity: AVAudioFrameCount(samples.count))
-        else { chunkDone(gen); return }
+        else { return }
         buf.frameLength = AVAudioFrameCount(samples.count)
         samples.withUnsafeBufferPointer { src in
             buf.floatChannelData![0].update(from: src.baseAddress!, count: samples.count)
         }
-        player.scheduleBuffer(buf, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            self?.chunkDone(gen)
+
+        lock.lock()
+        guard current == frame.utteranceId else { lock.unlock(); return }
+        let gen = generation, ep = epoch
+        pending += 1
+        unplayed.append(buf)
+        lock.unlock()
+
+        // The output can stop on its own (device asleep, another app took it). Restart it rather than playing into nothing.
+        if !engine.isRunning, !ensurePlayback() {
+            stopAll()
+            return
         }
-        if engine.isRunning, !player.isPlaying { player.play() }
+        schedule(buf, gen: gen, epoch: ep)
+        if !player.isPlaying { player.play() }
     }
 
     func endUtterance(_ id: String) {
@@ -287,9 +318,10 @@ final class AudioEngine {
         if finishedNow { onPlayback?(id, "finished") }
     }
 
-    private func chunkDone(_ gen: Int) {
+    private func chunkDone(_ gen: Int, epoch ep: Int, _ buf: AVAudioPCMBuffer) {
         lock.lock()
-        guard gen == generation, let id = current else { lock.unlock(); return }
+        guard gen == generation, ep == epoch, let id = current else { lock.unlock(); return }
+        if let i = unplayed.firstIndex(where: { $0 === buf }) { unplayed.remove(at: i) }
         pending -= 1
         let done = pending <= 0 && ended
         if done { current = nil }
@@ -305,6 +337,7 @@ final class AudioEngine {
         generation += 1
         pending = 0
         ended = false
+        unplayed = []
         lock.unlock()
         player.stop()
         earconPlayer.stop()
