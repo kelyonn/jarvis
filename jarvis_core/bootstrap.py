@@ -20,8 +20,9 @@ async def _watch_config(cfg: Config) -> None:
     except ImportError:
         return
     path = paths.config_file()
-    async for _ in awatch(path.parent, recursive=False):
-        if not path.exists():
+    # Only the config file counts: the same folder holds the databases and logs, which change on every turn.
+    async for changes in awatch(path.parent, recursive=False, watch_filter=lambda _c, p: os.path.basename(p) == path.name):
+        if not path.exists() or not changes:
             continue
         try:
             reload_into(cfg, load_config(path))
