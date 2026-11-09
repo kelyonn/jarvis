@@ -5,6 +5,7 @@ import SwiftUI
 /// Draws a formatted reply (code, working, tables, steps) inside the chat card.
 struct RichView: View {
     let blocks: [RichBlock]
+    var bodySize: CGFloat = 13.5
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -13,7 +14,7 @@ struct RichView: View {
                 case .heading(let level, let text):
                     inline(text).font(.system(size: level == 1 ? 17 : level == 2 ? 15.5 : 14.5, weight: .semibold))
                 case .paragraph(let text):
-                    inline(text).font(.system(size: 13.5)).lineSpacing(2.5)
+                    inline(text).font(.system(size: bodySize)).lineSpacing(2.5)
                 case .code(let lang, let text):
                     CodeBlockView(language: lang, code: text)
                 case .math(let text):
@@ -23,7 +24,7 @@ struct RichView: View {
                         ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                             HStack(alignment: .firstTextBaseline, spacing: 7) {
                                 Text("•").foregroundColor(.secondary)
-                                inline(item).font(.system(size: 13.5)).lineSpacing(2)
+                                inline(item).font(.system(size: bodySize)).lineSpacing(2)
                             }
                         }
                     }
@@ -33,7 +34,7 @@ struct RichView: View {
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
                                 Text("\(item.number)").font(.system(size: 12, weight: .semibold, design: .rounded))
                                     .foregroundColor(.secondary).frame(minWidth: 16, alignment: .trailing)
-                                inline(item.text).font(.system(size: 13.5)).lineSpacing(2)
+                                inline(item.text).font(.system(size: bodySize)).lineSpacing(2)
                             }
                         }
                     }
@@ -42,7 +43,7 @@ struct RichView: View {
                 case .quote(let text):
                     HStack(spacing: 8) {
                         Rectangle().fill(Color.white.opacity(0.25)).frame(width: 2)
-                        inline(text).font(.system(size: 13.5)).foregroundColor(.secondary)
+                        inline(text).font(.system(size: bodySize)).foregroundColor(.secondary)
                     }
                     .fixedSize(horizontal: false, vertical: true)
                 case .rule:

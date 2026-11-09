@@ -48,6 +48,7 @@ class Speaker:
         self.last_screen = ""
         spoken: list[str] = []
         voiced: list[str] = []
+        shown: list[str] = []  # the reply as written (line breaks, lists, bold kept) for the chat box
         started = False
         try:
             await self.frontend.play_begin(utt, interruptible)
@@ -58,7 +59,9 @@ class Speaker:
                 text = speakable(sentence)
                 if not text:
                     return
-                await self.frontend.caption(caption_text(" ".join(spoken)), False)  # the whole reply, so the chat box can show all of it
+                # The whole reply as written so far, so the chat box can format it (the sentence splitter drops line breaks).
+                written = "".join(shown).strip()
+                await self.frontend.caption(caption_text(written or " ".join(spoken)), False)
                 cap = self.cap_source() if self.cap_source else None
                 if cap is not None and len(voiced) >= cap:
                     return  # enough said aloud; the rest stays on the card
@@ -81,10 +84,14 @@ class Speaker:
                     await self.frontend.rich(text)
 
             async for piece in chunks:
-                for s in splitter.feed(screen.feed(piece)):
+                said = screen.feed(piece)
+                shown.append(said)
+                for s in splitter.feed(said):
                     await emit(s)
                 await push_screen(False)
-            for s in splitter.feed(screen.flush()):
+            said = screen.flush()
+            shown.append(said)
+            for s in splitter.feed(said):
                 await emit(s)
             tail = splitter.flush()
             if tail:

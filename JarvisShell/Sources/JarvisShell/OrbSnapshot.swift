@@ -5,6 +5,8 @@ import SwiftUI
 /// Developer aid: `JARVIS_ORB_SNAPSHOT=/some/dir JarvisShell` renders the HUD in a few states to PNG files and exits.
 enum OrbSnapshot {
     @MainActor static func write(to dir: String) {
+        OrbPanel.store = UserDefaults(suiteName: "com.jarvis.shell.snapshot")!  // never touch the real orb settings
+        defer { OrbPanel.store.removePersistentDomain(forName: "com.jarvis.shell.snapshot") }
         let cases: [(String, OrbStateName, String, String, String)] = [
             ("listening", .listening, "", "", ""),
             ("thinking", .thinking, "Play Mr. Brightside by The Killers on Spotify", "", ""),
@@ -15,6 +17,7 @@ enum OrbSnapshot {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let chat = OrbModel()
         chat.state = .followUp
+        chat.customHeight = 700  // tall enough to show the whole conversation in the snapshot
         chat.messages = [
             ChatLine(fromUser: true, text: "How many unread WhatsApp messages do I have?"),
             ChatLine(fromUser: false, text: "You have sixteen unread: nine from Naan, three from Deepika and three from Dhanyatha."),
@@ -22,13 +25,15 @@ enum OrbSnapshot {
             ChatLine(fromUser: false, text: "Naan wrote at two fourteen pm: so I don't know how that works. Then at two sixteen: can you send me the notes before tonight? And finally, no rush though, whenever you get a minute."),
             ChatLine(fromUser: true, text: "Reply that I'll send them at eight"),
             ChatLine(fromUser: false, text: "Here's the draft for Naan, sir. \"I'll send them at eight tonight.\" Shall I put it in WhatsApp?"),
+            ChatLine(fromUser: true, text: "Are there journals that don't charge authors?"),
+            ChatLine(fromUser: false, text: "Yes, but be selective.\n\n**What \"free\" really means**\n- **Gold open access**: the author pays an APC.\n- **Diamond open access**: authors pay nothing.\n\n**How to find them**\n1. Check the journal's fees page.\n2. Search DOAJ for *no APC*."),
         ]
         // A real AppKit view renders scroll views, which ImageRenderer cannot.
         let host = NSHostingView(rootView: OrbView(model: chat, onClick: { _ in }, onSize: { _ in }, onDrag: { _ in })
             .background(Color(red: 0.85, green: 0.87, blue: 0.9)))
-        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 520), styleMask: [.borderless], backing: .buffered, defer: false)
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 900), styleMask: [.borderless], backing: .buffered, defer: false)
         win.contentView = host
-        host.frame = NSRect(x: 0, y: 0, width: 480, height: 520)
+        host.frame = NSRect(x: 0, y: 0, width: 520, height: 900)
         RunLoop.current.run(until: Date().addingTimeInterval(0.6))
         host.layoutSubtreeIfNeeded()
         if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {

@@ -31,6 +31,16 @@ final class OrbModel: ObservableObject {
     @Published var ghost = false       // you clicked another app: Jarvis sits behind its windows until it has something to say
     @Published var focusTick = 0       // bumped to ask the type box to take focus
     @Published var debugMarker = false // self-test: draw a magenta dot on the orb so its pixels can be found
+    /// Card size you set by dragging the corner grip (nil = automatic). Remembered between launches.
+    @Published var customWidth: CGFloat? = OrbModel.load("orbCardWidth") { didSet { OrbModel.save(customWidth, "orbCardWidth") } }
+    @Published var customHeight: CGFloat? = OrbModel.load("orbChatHeight") { didSet { OrbModel.save(customHeight, "orbChatHeight") } }
+
+    private static func load(_ key: String) -> CGFloat? {
+        OrbPanel.store.object(forKey: key) == nil ? nil : CGFloat(OrbPanel.store.double(forKey: key))
+    }
+    private static func save(_ v: CGFloat?, _ key: String) {
+        if let v { OrbPanel.store.set(Double(v), forKey: key) } else { OrbPanel.store.removeObject(forKey: key) }
+    }
 
     var hasText: Bool { !messages.isEmpty || !notice.isEmpty }
     var cardVisible: Bool { !dismissed && (hasText || (showQueue && !queue.isEmpty) || state.isBusy || typing) }
@@ -98,9 +108,16 @@ struct OrbView: View {
     var onSend: (String) -> Void = { _ in }
     var onEscape: () -> Void = {}
 
-    private var cardWidth: CGFloat { model.messages.contains { $0.rich != nil } ? 600 : 440 }
-    private var chatMaxHeight: CGFloat { model.messages.contains { $0.rich != nil } ? 540 : 340 }
+    static let widthRange: ClosedRange<CGFloat> = 320...1000
+    static let heightRange: ClosedRange<CGFloat> = 80...760
+    private var autoWidth: CGFloat { model.messages.contains { $0.rich != nil } ? 600 : 460 }
+    private var autoMaxHeight: CGFloat { model.messages.contains { $0.rich != nil } ? 540 : 380 }
+    private var cardWidth: CGFloat { model.customWidth ?? autoWidth }
+    private var chatMaxHeight: CGFloat { model.customHeight ?? autoMaxHeight }
+    /// Automatic: as tall as the conversation, up to a limit. Resized by you: exactly the height you chose (it scrolls).
+    private var chatFrameHeight: CGFloat { model.customHeight ?? min(max(chatHeight, 24), chatMaxHeight) }
     @State private var chatHeight: CGFloat = 40
+    @State private var resizeStart: CGSize?
     @FocusState private var inputFocused: Bool
 
     private var label: String {
@@ -176,6 +193,9 @@ struct OrbView: View {
                 Circle().fill(dotColor).frame(width: 6, height: 6)
                 Text(label).font(.system(size: 11.5, weight: .medium)).foregroundColor(.secondary)
                 Spacer(minLength: 4)
+                if model.messages.contains(where: { !$0.fromUser }) {
+                    CopyButton(help: "Copy the conversation") { conversationText }
+                }
                 if model.state.isBusy {
                     Button { onClick("dismiss") } label: {
                         Text("Stop").font(.system(size: 11.5, weight: .medium))
@@ -192,9 +212,11 @@ struct OrbView: View {
                 .buttonStyle(.plain)
                 .help("Hide")
             }
+            .contentShape(Rectangle())
+            .gesture(dragGesture)  // drag the card by its header; the text below is for selecting
             if !model.messages.isEmpty {
                 ScrollViewReader { proxy in
-                    ScrollView(.vertical, showsIndicators: chatHeight > chatMaxHeight) {
+                    ScrollView(.vertical, showsIndicators: chatHeight > chatFrameHeight) {
                         VStack(alignment: .leading, spacing: 10) {
                             ForEach(model.messages) { line in
                                 if line.fromUser {
@@ -203,35 +225,27 @@ struct OrbView: View {
                                         Text(line.text)
                                             .font(.system(size: 13))
                                             .foregroundColor(.primary)
+                                            .textSelection(.enabled)
                                             .padding(.horizontal, 10).padding(.vertical, 6)
                                             .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.12)))
                                             .fixedSize(horizontal: false, vertical: true)
                                     }
                                 } else {
-                                    VStack(alignment: .leading, spacing: 9) {
-                                        if !line.text.isEmpty || line.rich == nil {
-                                            Text(line.text)
-                                                .font(.system(size: 14.5))
-                                                .foregroundColor(.primary)
-                                                .lineSpacing(2.5)
-                                                .frame(maxWidth: .infinity, alignment: .leading)
-                                                .fixedSize(horizontal: false, vertical: true)
-                                        }
-                                        if let rich = line.rich { RichView(blocks: RichMarkdown.parse(rich)) }
-                                    }
+                                    ReplyView(line: line, conversation: { conversationText })
                                 }
                             }
                             Color.clear.frame(height: 1).id("bottom")
                         }
                         .background(GeometryReader { g in Color.clear.preference(key: HeightKey.self, value: g.size.height) })
                     }
-                    .frame(height: min(max(chatHeight, 24), chatMaxHeight))
+                    .frame(height: chatFrameHeight)
                     .onPreferenceChange(HeightKey.self) { chatHeight = $0 }
                     .onChange(of: model.messages) { withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
                 }
             }
             if !model.notice.isEmpty {
                 Text(model.notice)
+                    .textSelection(.enabled)
                     .font(.system(size: 13.5))
                     .foregroundColor(.primary)
                     .lineSpacing(2)
@@ -255,8 +269,61 @@ struct OrbView: View {
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.white.opacity(0.1), lineWidth: 0.5))
                 .shadow(color: .black.opacity(0.3), radius: 10, y: 3)
         )
+        .overlay(alignment: gripCorner) { resizeGrip.offset(gripOffset) }
         .environment(\.colorScheme, .dark)
-        .gesture(dragGesture)
+    }
+
+    /// The corner away from the orb: drag it to resize the card, double-click it to go back to automatic sizing.
+    private var gripCorner: Alignment {
+        switch (model.alignBottom, model.alignRight) {
+        case (true, true): return .topLeading
+        case (true, false): return .topTrailing
+        case (false, true): return .bottomLeading
+        case (false, false): return .bottomTrailing
+        }
+    }
+
+    /// The handle sits on the card's corner, half outside it, so it never covers the header or the type box.
+    private var gripOffset: CGSize {
+        CGSize(width: model.alignRight ? -5 : 5, height: model.alignBottom ? -5 : 5)
+    }
+
+    private var resizeGrip: some View {
+        Image(systemName: "arrow.up.left.and.arrow.down.right")
+            .font(.system(size: 7.5, weight: .bold))
+            .foregroundColor(.white.opacity(0.75))
+            .rotationEffect(.degrees(model.alignBottom == model.alignRight ? 0 : 90))
+            .frame(width: 17, height: 17)
+            .background(Circle().fill(Color(white: 0.2)))
+            .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5))
+            .contentShape(Circle())
+            .help("Drag to resize. Double-click to reset.")
+            .onTapGesture(count: 2) { model.customWidth = nil; model.customHeight = nil }
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { g in
+                        let start = resizeStart ?? CGSize(width: cardWidth, height: chatFrameHeight)
+                        if resizeStart == nil { resizeStart = start }
+                        let dx = model.alignRight ? -g.translation.width : g.translation.width  // the card grows away from the orb
+                        let dy = model.alignBottom ? -g.translation.height : g.translation.height
+                        model.customWidth = min(max(start.width + dx, Self.widthRange.lowerBound), Self.widthRange.upperBound)
+                        model.customHeight = min(max(start.height + dy, Self.heightRange.lowerBound), Self.heightRange.upperBound)
+                    }
+                    .onEnded { _ in resizeStart = nil }
+            )
+    }
+
+    private var conversationText: String {
+        model.messages.map { $0.fromUser ? "You: \($0.text)" : "Jarvis: \(Self.plain($0))" }.joined(separator: "\n\n")
+    }
+
+    static func plain(_ line: ChatLine) -> String {
+        [line.text, line.rich ?? ""].filter { !$0.isEmpty }.joined(separator: "\n\n")
+    }
+
+    static func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     private var orbView: some View {
@@ -424,6 +491,32 @@ final class OrbPanel: NSPanel {
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// Clicking into the card (not the orb) takes the keyboard, so text can be selected and copied with Cmd+C.
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown, !isKeyWindow {
+            let p = convertPoint(toScreen: event.locationInWindow)
+            let o = orbScreenCenter
+            if hypot(p.x - o.x, p.y - o.y) > Self.orbHalf + 4 { makeKey() }
+        }
+        super.sendEvent(event)
+    }
+
+    /// Jarvis has no menu bar menu, so the standard editing shortcuts are routed here.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == .command, let key = event.charactersIgnoringModifiers?.lowercased() {
+            let action: Selector? = switch key {
+            case "c": #selector(NSText.copy(_:))
+            case "a": #selector(NSText.selectAll(_:))
+            case "v": #selector(NSText.paste(_:))
+            case "x": #selector(NSText.cut(_:))
+            default: nil
+            }
+            if let action, NSApp.sendAction(action, to: nil, from: self) { return true }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
 
     override func becomeKey() { super.becomeKey(); model.typing = true; refreshVisibility() }
     override func resignKey() {
@@ -772,5 +865,58 @@ final class OrbPanel: NSPanel {
         }
         if model.queue.isEmpty { model.showQueue = false }
         refreshVisibility()
+    }
+}
+
+/// A small copy icon that briefly turns into a tick.
+struct CopyButton: View {
+    let help: String
+    let text: () -> String
+    @State private var done = false
+
+    var body: some View {
+        Button {
+            OrbView.copy(text())
+            done = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { done = false }
+        } label: {
+            Image(systemName: done ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundColor(.secondary)
+                .frame(width: 18, height: 18)
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+}
+
+/// One of Jarvis's replies: formatted, selectable, with a copy button that shows while the pointer is over it.
+struct ReplyView: View {
+    let line: ChatLine
+    let conversation: () -> String
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            if !line.text.isEmpty {
+                // Replies are written in Markdown: show bold, lists and headings, not the raw ** and -.
+                RichView(blocks: RichMarkdown.parse(line.text), bodySize: 14)
+            }
+            if let rich = line.rich { RichView(blocks: RichMarkdown.parse(rich)) }
+        }
+        .textSelection(.enabled)
+        .padding(.trailing, 4)
+        .overlay(alignment: .bottomTrailing) {
+            if hovering && (!line.text.isEmpty || line.rich != nil) {
+                CopyButton(help: "Copy this reply") { OrbView.plain(line) }
+                    .background(RoundedRectangle(cornerRadius: 5).fill(Color(white: 0.16)))
+                    .offset(x: 4, y: 4)
+            }
+        }
+        .onHover { hovering = $0 }
+        .contextMenu {
+            Button("Copy reply") { OrbView.copy(OrbView.plain(line)) }
+            Button("Copy conversation") { OrbView.copy(conversation()) }
+        }
     }
 }

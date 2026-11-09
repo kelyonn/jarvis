@@ -110,3 +110,18 @@ def test_screen_only_reply_still_says_something():
     spoken = asyncio.run(sp.speak_stream(stream()))
     assert "screen" in spoken
     assert fe.rich_blocks[-1] == "1. one\n2. two"
+
+
+def test_chat_box_gets_the_reply_with_its_formatting():
+    # The sentence splitter joins lines for speech; the chat box must still get the line breaks so lists and headings render.
+    fe, tts = FakeFrontend(), FakeTTS()
+    sp = Speaker(tts, fe)
+
+    async def stream():
+        for piece in ["Yes, but be selective.\n\n**What it means**\n", "- **Gold**: you pay.\n", "- **Diamond**: free.\n"]:
+            yield piece
+
+    asyncio.run(sp.speak_stream(stream()))
+    shown = fe.captions[-1]
+    assert "**What it means**\n• **Gold**: you pay.\n• **Diamond**: free." in shown  # bullets the shell renders as a list
+    assert all("**" not in t for t in tts.spoken)  # the voice never reads the markdown
