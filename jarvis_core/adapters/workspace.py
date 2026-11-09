@@ -183,19 +183,31 @@ def events_all(start: datetime, end: datetime, query: str = "", limit: int = 30)
     the error is raised only when none of them worked."""
     from jarvis_core.adapters.google import list_accounts
 
+    from concurrent.futures import ThreadPoolExecutor
+
     out: list[Event] = []
     seen: set[tuple[str, str]] = set()
     errors: list[Exception] = []
     names = list_accounts() or ["gmail"]
-    for name in names:
+
+    def fetch(name: str) -> list[Event] | Exception:
         try:
-            for ev in Workspace(name).events(start, end, query, limit):
-                key = (ev.title.strip().lower(), ev.start.isoformat() if ev.start else "")
-                if key not in seen:
-                    seen.add(key)
-                    out.append(ev)
+            return Workspace(name).events(start, end, query, limit)
         except Exception as e:  # noqa: BLE001
-            errors.append(e)
+            return e
+
+    # All accounts at once: one after another took 2-5 s each and pushed the briefing past its time limit.
+    with ThreadPoolExecutor(max_workers=max(1, len(names))) as pool:
+        results = list(pool.map(fetch, names))
+    for res in results:
+        if isinstance(res, Exception):
+            errors.append(res)
+            continue
+        for ev in res:
+            key = (ev.title.strip().lower(), ev.start.isoformat() if ev.start else "")
+            if key not in seen:
+                seen.add(key)
+                out.append(ev)
     if errors and len(errors) == len(names):
         raise errors[0]
     out.sort(key=lambda ev: ev.start or datetime.max.astimezone())

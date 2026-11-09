@@ -39,11 +39,13 @@ async def events_between(env: Env, start: datetime, end: datetime) -> list[CalEv
         sources = [apple, _google_events]
     items: list = []
     errors: list[Exception] = []
-    for src in sources:
-        try:
-            items += await loop.run_in_executor(None, src, start, end)
-        except Exception as e:  # noqa: BLE001 - one source down must not hide the other
-            errors.append(e)
+    # Both sources at once; one source down must not hide the other.
+    results = await asyncio.gather(*(loop.run_in_executor(None, src, start, end) for src in sources), return_exceptions=True)
+    for res in results:
+        if isinstance(res, Exception):
+            errors.append(res)
+        else:
+            items += res
     if errors and len(errors) == len(sources):
         raise errors[0]
     out: list[CalEvent] = []

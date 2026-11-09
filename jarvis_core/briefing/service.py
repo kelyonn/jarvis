@@ -79,7 +79,7 @@ class BriefingService:
             if k not in results:
                 continue
             if isinstance(r, BaseException):
-                log.warning("briefing section %s failed: %s", k, r or type(r).__name__)
+                log.warning("briefing section %s failed: %s", k, str(r) or type(r).__name__)  # TimeoutError has no message
                 data.sections[k] = SectionResult(k, ok=False, error=str(r) or type(r).__name__)
             else:
                 data.sections[k] = SectionResult(k, data=r)
