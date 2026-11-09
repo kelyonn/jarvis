@@ -50,6 +50,7 @@ rm -rf "$OUT"
 mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Resources"
 cp "$BIN" "$OUT/Contents/MacOS/JarvisShell"
 cp "$PKG/Resources/Info.plist" "$OUT/Contents/Info.plist"
+cp "$PKG/Resources/AppIcon.icns" "$OUT/Contents/Resources/AppIcon.icns"
 
 if [[ -z "$ID" ]]; then ID="$(find_identity || true)"; fi
 if [[ -z "$ID" ]]; then
