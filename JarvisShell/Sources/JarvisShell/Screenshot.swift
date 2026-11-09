@@ -16,8 +16,14 @@ enum Screenshot {
         defer { try? FileManager.default.removeItem(at: tmp) }
 
         var argv = ["-x", "-t", "png"]
-        if (args["target"] as? String) == "window", let wid = frontWindowID() {
-            argv = ["-x", "-t", "png", "-l", String(wid)]
+        if args["include_cursor"] as? Bool == true { argv.append("-C") }
+        let target = (args["target"] as? String) ?? "screen"
+        if target == "window", let wid = frontWindowID() {
+            argv += ["-l", String(wid)]
+        } else if target == "selection" {
+            argv.append("-s")  // the user drags a region; Esc cancels and writes no file
+        } else if target.hasPrefix("display:"), let n = Int(target.dropFirst("display:".count)), n > 0 {
+            argv += ["-D", String(n)]
         }
         argv.append(tmp.path)
         let p = Process()
@@ -25,6 +31,9 @@ enum Screenshot {
         p.arguments = argv
         try p.run()
         p.waitUntilExit()
+        if target == "selection", !FileManager.default.fileExists(atPath: tmp.path) {
+            throw AXFailure(message: "Screenshot cancelled")
+        }
         guard p.terminationStatus == 0, let src = CGImageSourceCreateWithURL(tmp as CFURL, nil),
               let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
             throw AXFailure(message: "screencapture failed")

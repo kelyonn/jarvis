@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import Any
 
@@ -27,23 +28,41 @@ end tell"""
 
 
 async def _screenshot(ctx: ToolContext, a: dict[str, Any]) -> str:
+    """Screenshot in the modes macOS offers: whole screen, one display, front window, a dragged selection, a timed capture,
+    and to the clipboard. The capture is done by JarvisShell, which holds the Screen Recording permission; a screencapture
+    run by the daemon itself can report success without writing anything."""
+    import base64
+
+    target = (a.get("target") or "screen").lower().strip()
+    to_clipboard = bool(a.get("to_clipboard"))
+    delay = max(0, min(int(a.get("delay_seconds") or 0), 30))
+    if delay:
+        await asyncio.sleep(delay)
+    shell_target = target
+    what = {"screen": "the screen", "window": "the front window", "selection": "the area you selected"}.get(target, "the screen")
+    if target.startswith("display"):
+        digits = "".join(ch for ch in target if ch.isdigit()) or str(a.get("display") or 1)
+        shell_target, what = f"display:{digits}", f"display {digits}"
+    elif target not in ("screen", "window", "selection"):
+        shell_target = "screen"
+    try:
+        r = await ctx.shell_request("screenshot", {"target": shell_target, "max_dimension": 8000, "include_cursor": bool(a.get("include_cursor"))},
+                                    timeout=15 + (90 if target == "selection" else 0))
+    except SkillError as e:
+        if target == "selection" and "cancel" in str(e).lower():
+            return "Screenshot cancelled, nothing was saved."
+        raise
+    raw = base64.b64decode(r.get("image_b64") or "")
+    if not raw:
+        raise SkillError("The screenshot came back empty, sir. Screen Recording permission may be missing.")
     folder = ctx.home_dir / "Desktop" / "Screenshots"
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"Jarvis {ctx.clock().strftime('%Y-%m-%d at %H.%M.%S')}.png"
-    argv = ["screencapture", "-x"]
-    what = "the screen"
-    if a.get("target") == "window":
-        try:
-            rect = (await ctx.osa(_FRONT_WINDOW_RECT)).replace(" ", "")
-            if rect.count(",") == 3:
-                argv += ["-R", rect]
-                what = "that window"
-        except SkillError:
-            pass  # no Accessibility: fall back to the whole screen
-    res = await ctx.run([*argv, str(path)], timeout=15)
-    if not res.ok:
-        raise SkillError("I couldn't take the screenshot, sir. Screen Recording permission may be missing.")
-    return f"Captured {what}. It's saved in Screenshots on your Desktop."
+    path = folder / f"Jarvis {ctx.clock().strftime('%Y-%m-%d at %H.%M.%S')}.jpg"
+    path.write_bytes(raw)
+    if to_clipboard:
+        await ctx.osa('on run argv\nset the clipboard to (read (POSIX file (item 1 of argv)) as JPEG picture)\nend run', str(path))
+        return f"Copied a screenshot of {what} to the clipboard, and saved it as {path.name} in Screenshots on your Desktop."
+    return f"Captured {what}. Saved as {path.name} in Screenshots on your Desktop."
 
 
 # ---- Focus -------------------------------------------------------------------------------------------
@@ -221,8 +240,12 @@ async def _quit_all(ctx: ToolContext, a: dict[str, Any]) -> str:
 
 def register(reg: ToolRegistry) -> None:
     reg.register(Tool(
-        "take_screenshot", "Save a screenshot of the whole screen or the front window to the Screenshots folder.",
-        obj({"target": E("screen or window", ["screen", "window"])}), _screenshot, category="capture"))
+        "take_screenshot", "Take a screenshot. target: screen (everything, default), window (front window), selection (the user "
+        "drags an area), or display 2 / display 3 for another monitor. Set to_clipboard to copy instead of saving a file, "
+        "delay_seconds for a timed capture, include_cursor to show the pointer.",
+        obj({"target": S("screen, window, selection, or 'display N'"), "to_clipboard": {"type": "boolean", "description": "Copy to clipboard instead of saving"},
+             "delay_seconds": I("Wait this many seconds first"), "include_cursor": {"type": "boolean", "description": "Include the mouse pointer"}}),
+        _screenshot, category="capture", timeout_s=90))
     reg.register(Tool(
         "set_focus", "Turn a Focus mode (Do Not Disturb, Work, Sleep...) on or off.",
         obj({"name": S("Focus name, default Do Not Disturb"), "state": E("on or off", ["on", "off"])}), _set_focus, category="focus"))

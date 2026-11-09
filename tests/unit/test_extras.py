@@ -35,26 +35,44 @@ def test_new_tools_registered_with_expected_risk():
         assert reg.get(name).risk == Risk.CONFIRM
 
 
-def test_screenshot_full_screen_writes_to_screenshots_folder(tmp_path):
-    runner = FakeRunner()
-    ctx = ctx_for(tmp_path, runner)
-    out = run(build_registry().get("take_screenshot").handler(ctx, {"target": "screen"}))
-    cmd = runner.calls[-1]
-    assert cmd[:2] == ["screencapture", "-x"] and cmd[-1].endswith(".png") and "Screenshots" in cmd[-1]
-    assert (tmp_path / "home" / "Desktop" / "Screenshots").is_dir()
-    assert "screen" in out
+def _shot_ctx(tmp_path, handler=None):
+    import base64
+
+    from jarvis_core.frontend import FakeFrontend
+
+    ctx = ctx_for(tmp_path, FakeRunner())
+    fe = FakeFrontend()
+    fe.request_handler = handler or (lambda op, args: {"image_b64": base64.b64encode(b"jpegbytes").decode()})
+    ctx.frontend = fe
+    return ctx, fe
 
 
-def test_screenshot_window_uses_region_then_falls_back(tmp_path):
-    runner = FakeRunner({("osascript",): CmdResult(0, "10,20,800,600")})
-    ctx = ctx_for(tmp_path, runner)
-    run(build_registry().get("take_screenshot").handler(ctx, {"target": "window"}))
-    assert "-R" in runner.calls[-1] and "10,20,800,600" in runner.calls[-1]
+def test_screenshot_is_taken_by_the_shell_and_saved(tmp_path):
+    ctx, fe = _shot_ctx(tmp_path)
+    out = run(build_registry().get("take_screenshot").handler(ctx, {"target": "window"}))
+    op, args = fe.requests[-1]
+    assert op == "screenshot" and args["target"] == "window"
+    files = list((tmp_path / "home" / "Desktop" / "Screenshots").glob("*.jpg"))
+    assert len(files) == 1 and files[0].read_bytes() == b"jpegbytes"
+    assert "front window" in out and files[0].name in out
 
-    runner = FakeRunner({("osascript",): CmdResult(1, "", "not allowed assistive access")})
-    ctx = ctx_for(tmp_path, runner)
-    run(build_registry().get("take_screenshot").handler(ctx, {"target": "window"}))
-    assert "-R" not in runner.calls[-1]
+
+def test_screenshot_modes_reach_the_shell(tmp_path):
+    ctx, fe = _shot_ctx(tmp_path)
+    tool = build_registry().get("take_screenshot")
+    run(tool.handler(ctx, {"target": "selection"}))
+    assert fe.requests[-1][1]["target"] == "selection"
+    run(tool.handler(ctx, {"target": "display 2", "include_cursor": True}))
+    assert fe.requests[-1][1]["target"] == "display:2" and fe.requests[-1][1]["include_cursor"] is True
+
+
+def test_screenshot_to_clipboard_and_empty_result(tmp_path):
+    ctx, _fe = _shot_ctx(tmp_path)
+    out = run(build_registry().get("take_screenshot").handler(ctx, {"target": "screen", "to_clipboard": True}))
+    assert "clipboard" in out and ctx.runner.ran("osascript")
+    ctx2, _ = _shot_ctx(tmp_path, lambda op, args: {"image_b64": ""})
+    with pytest.raises(SkillError, match="came back empty"):
+        run(build_registry().get("take_screenshot").handler(ctx2, {"target": "screen"}))
 
 
 def test_focus_runs_shortcut_and_reports_missing(tmp_path):
@@ -119,6 +137,9 @@ def test_close_all_tabs_closes_front_window_only(tmp_path):
 @pytest.mark.parametrize("phrase,tool,args", [
     ("take a screenshot", "take_screenshot", {"target": "screen"}),
     ("screenshot this window", "take_screenshot", {"target": "window"}),
+    ("screenshot a selected area", "take_screenshot", {"target": "selection"}),
+    ("screenshot in 5 seconds", "take_screenshot", {"target": "screen", "delay_seconds": "5"}),
+    ("take a screenshot to my clipboard", "take_screenshot", {"target": "screen", "to_clipboard": "true"}),
     ("turn on do not disturb", "set_focus", {"state": "on"}),
     ("turn off focus mode", "set_focus", {"state": "off"}),
 ])

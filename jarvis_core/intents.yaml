@@ -469,6 +469,28 @@
   args: {target: window}
   reply: "{result}"
 
+- name: screenshot_selection
+  patterns:
+    - '^(?:take |grab |capture )?(?:a )?(?:screenshot|screen shot)(?: of)? (?:a |an |the |my )?(?:selected|selection|custom|specific|partial)(?: area| part| region| section)?(?: of (?:the |my )?screen)?$'
+    - '^(?:take |grab |capture )?(?:a )?(?:screenshot|screen shot) of (?:an? )?(?:area|part|region|section)$'
+  tool: take_screenshot
+  args: {target: selection}
+  reply: "{result}"
+
+- name: screenshot_clipboard
+  patterns:
+    - '^(?:take |grab |capture )?(?:a )?(?:screenshot|screen shot)(?: of (?:my |the )?screen)? (?:to|onto|into|and copy (?:it )?to) (?:my |the )?clipboard$'
+  tool: take_screenshot
+  args: {target: screen, to_clipboard: "true"}
+  reply: "{result}"
+
+- name: screenshot_delay
+  patterns:
+    - '^(?:take |grab |capture )?(?:a )?(?:screenshot|screen shot) in (?P<n>\d{1,2}) seconds?$'
+  tool: take_screenshot
+  args: {target: screen, delay_seconds: "{n}"}
+  reply: "{result}"
+
 - name: screenshot
   patterns:
     - '^(?:take|grab|capture) (?:a )?(?:screenshot|screen shot)(?: of (?:my |the )?screen)?$'
