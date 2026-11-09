@@ -14,15 +14,47 @@ def day_bounds(now: datetime, offset_days: int = 0) -> tuple[datetime, datetime]
     return start, start + timedelta(days=1) - timedelta(seconds=1)
 
 
+def _google_events(start: datetime, end: datetime) -> list:
+    """Items for the same window from Google Calendar (the sign-in Gmail already uses); [] when not connected."""
+    from jarvis_core.adapters.workspace import events_all  # noqa: PLC0415
+    from jarvis_core.interfaces import Item  # noqa: PLC0415
+
+    return [
+        Item(source="calendar", id=f"gcal:{e.id}", title=e.title, body="", timestamp=e.start, unread=False,
+             meta={"location": e.location, "all_day": e.all_day, "has_attendees": e.attendees > 1, "end": e.end})
+        for e in events_all(start, end, limit=50) if e.start
+    ]
+
+
 async def events_between(env: Env, start: datetime, end: datetime) -> list[CalEvent]:
+    """Events from the Apple Calendar database and from Google Calendar, merged. Either source may be unavailable (no Full
+    Disk Access, not signed in to Google); the section only fails when every source does."""
     provider = env.services.get("calendar_provider")
-    if provider is None:
-        from jarvis_core.adapters.services import calendar_events as provider  # noqa: PLC0415
-    items = await asyncio.get_running_loop().run_in_executor(None, provider, start, end)
+    loop = asyncio.get_running_loop()
+    if provider is not None:
+        sources = [provider]
+    else:
+        from jarvis_core.adapters.services import calendar_events as apple  # noqa: PLC0415
+
+        sources = [apple, _google_events]
+    items: list = []
+    errors: list[Exception] = []
+    for src in sources:
+        try:
+            items += await loop.run_in_executor(None, src, start, end)
+        except Exception as e:  # noqa: BLE001 - one source down must not hide the other
+            errors.append(e)
+    if errors and len(errors) == len(sources):
+        raise errors[0]
     out: list[CalEvent] = []
+    seen: set[tuple[str, int]] = set()
     for it in items:
         if not it.timestamp:
             continue
+        key = ((it.title or "").strip().lower(), int(it.timestamp.timestamp() // 60))
+        if key in seen:
+            continue
+        seen.add(key)
         out.append(
             CalEvent(
                 id=it.id,

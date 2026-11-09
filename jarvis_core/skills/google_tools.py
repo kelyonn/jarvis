@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime, time, timedelta
 from typing import Any
 
-from jarvis_core.adapters.workspace import CAL_SCOPE, Workspace, WorkspaceError
+from jarvis_core.adapters.workspace import CAL_SCOPE, Workspace, WorkspaceError, events_all
 from jarvis_core.errors import SkillError
 from jarvis_core.skills.base import Risk, S, Tool, ToolContext, ToolRegistry, obj
 
@@ -44,7 +44,7 @@ async def _agenda(ctx: ToolContext, a: dict[str, Any]) -> str:
         briefing = ctx.services.get("briefing")
         if briefing is not None:
             return await briefing.calendar_text(1 if label == "tomorrow" else 0)
-    events = await _run(ws.events, start, end)
+    events = await _run(events_all if ctx.services.get("workspace") is None else ws.events, start, end)
     if not events:
         return f"Nothing on your calendar {label}."
     return f"Your calendar {label}:\n" + "\n".join(e.line() for e in events)
@@ -52,7 +52,8 @@ async def _agenda(ctx: ToolContext, a: dict[str, Any]) -> str:
 
 async def _search(ctx: ToolContext, a: dict[str, Any]) -> str:
     now = datetime.now().astimezone()
-    events = await _run(_ws(ctx).events, now - timedelta(days=30), now + timedelta(days=180), a["query"], 10)
+    fn = events_all if ctx.services.get("workspace") is None else _ws(ctx).events
+    events = await _run(fn, now - timedelta(days=30), now + timedelta(days=180), a["query"], 10)
     return "Matching events:\n" + "\n".join(e.line() for e in events) if events else f"Nothing on your calendar matches {a['query']}."
 
 

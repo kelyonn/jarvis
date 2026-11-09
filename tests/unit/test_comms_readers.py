@@ -464,3 +464,53 @@ def test_timestamp_sentinels_do_not_crash_readers():
     assert whatsapp_db.to_dt(0) is not None
     assert imessage.to_dt(1e30) is None
     assert imessage.to_dt(7.5e17) is not None
+
+
+async def test_multi_gmail_merges_accounts_and_routes_threads():
+    from datetime import datetime, timezone
+
+    from jarvis_core.comms.gmail import MultiGmail
+    from jarvis_core.interfaces import Item
+
+    class Fake:
+        def __init__(self, items, ok=True):
+            self.items, self.ok, self.drafts, self.threads = items, ok, [], []
+
+        def check(self):
+            return self.ok, ""
+
+        def available(self):
+            return self.ok
+
+        def can_draft(self):
+            return True
+
+        async def unread(self, since=None, max_items=15):
+            if not self.ok:
+                raise RuntimeError("down")
+            return self.items
+
+        async def thread(self, thread_id, limit=6):
+            if thread_id not in {i.thread_id for i in self.items}:
+                raise RuntimeError("not mine")
+            self.threads.append(thread_id)
+            return [{"text": "hi"}]
+
+        async def create_draft(self, **kw):
+            self.drafts.append(kw)
+            return {"url": "u"}
+
+    t = lambda h: datetime(2026, 11, 6, h, tzinfo=timezone.utc)  # noqa: E731
+    main = Fake([Item(source="gmail", id="m1", thread_id="t1", timestamp=t(9))])
+    work = Fake([Item(source="gmail", id="w1", thread_id="t2", timestamp=t(11))])
+    broken = Fake([], ok=False)
+    multi = MultiGmail({"main": main, "work": work, "old": broken})
+    items = await multi.unread()
+    assert [i.id for i in items] == ["w1", "m1"] and items[0].meta["account"] == "work"
+    assert multi.check()[0] is True
+    await multi.thread("t2")
+    assert work.threads == ["t2"] and not main.threads
+    await multi.create_draft(thread_id="t2", to="a@b.c", subject="s", body="b")
+    assert work.drafts and not main.drafts
+    await multi.create_draft(to="a@b.c", subject="s", body="b")
+    assert main.drafts  # a new email goes out from the main account

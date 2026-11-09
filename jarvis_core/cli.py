@@ -211,7 +211,33 @@ def _cmd_alerts(args: argparse.Namespace) -> int:
 
 
 def _cmd_google(args: argparse.Namespace) -> int:
+    from jarvis_core.adapters import google as gg
     from jarvis_core.adapters import services as oj
+
+    if args.add:
+        try:
+            connector = gg.add_account(args.add)
+        except gg.GoogleAuthError as e:
+            print(e)
+            return 1
+        print(f"Added {gg.account_label(connector)}: {gg.account_email(connector) or 'signed in'}. Restart Jarvis to use it.")
+        return 0
+    if args.remove:
+        try:
+            revoked = gg.remove_account(args.remove)
+        except gg.GoogleAuthError as e:
+            print(e)
+            return 1
+        print("Removed." + ("" if revoked else " (Google couldn't confirm the revoke; see myaccount.google.com/permissions.)"))
+        return 0
+    if args.list:
+        names = gg.list_accounts()
+        if not names:
+            print("No Google accounts signed in. Run `jarvisd setup`.")
+            return 1
+        for n in names:
+            print(f"{gg.account_label(n):<12} {gg.account_email(n) or '(offline or expired)'}")
+        return 0
 
     session = oj.GoogleSession("gmail")
     if args.reauth:
@@ -347,6 +373,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("google", help="show or redo the Gmail sign-in (--reauth asks for Gmail access only)")
     s.add_argument("--reauth", action="store_true", help="revoke the old grant and sign in again with minimal permissions")
+    s.add_argument("--add", metavar="NAME", help="sign in another Google account under a short name (work, college...)")
+    s.add_argument("--remove", metavar="NAME", help="sign out and forget an extra account")
+    s.add_argument("--list", action="store_true", help="list the signed-in Google accounts")
     s.set_defaults(fn=_cmd_google)
 
     s = sub.add_parser("vip", help="manage VIP contacts")

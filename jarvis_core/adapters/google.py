@@ -252,3 +252,71 @@ def run_google_oauth(connector: str = "gmail", scopes: list[str] | None = None, 
         "access_token": tok["access_token"], "token": tok["access_token"], "refresh_token": tok.get("refresh_token", ""),
         "token_type": tok.get("token_type", "Bearer"), "expires_in": tok.get("expires_in", 3600),
         "scope": tok.get("scope", ""), "client_id": client_id, "client_secret": client_secret})
+
+
+# ---- several Google accounts ---------------------------------------------------------------------------------------
+# The first account is the connector "gmail". More are "gmail-<label>" (for example "gmail-work"), each with its own token
+# file. They all reuse the same OAuth client ID and secret, so adding one is a single browser sign-in.
+
+ACCOUNT_PREFIX = "gmail-"
+
+
+def _clean_label(label: str) -> str:
+    import re
+
+    out = re.sub(r"[^a-z0-9]+", "-", (label or "").strip().lower()).strip("-")
+    if not out or out == "gmail":
+        raise GoogleAuthError("Give the account a short name such as work or college.")
+    return out[:24]
+
+
+def list_accounts() -> list[str]:
+    """Connector names that are signed in, primary first: ["gmail", "gmail-work", ...]."""
+    d = paths.sub("google")
+    names = []
+    for p in sorted(d.glob("gmail*.json")):
+        t = load_tokens(p) or {}
+        stem = p.stem
+        if (stem == "gmail" or stem.startswith(ACCOUNT_PREFIX)) and (t.get("refresh_token") or t.get("access_token")):
+            names.append(stem)
+    if "gmail" in names:
+        names.remove("gmail")
+        names.insert(0, "gmail")
+    return names
+
+
+def account_label(connector: str) -> str:
+    return "main" if connector == "gmail" else connector.removeprefix(ACCOUNT_PREFIX)
+
+
+def account_email(connector: str) -> str:
+    """The Gmail address of an account ("" when offline or not signed in)."""
+    try:
+        r = GoogleSession(connector).request("GET", "https://gmail.googleapis.com/gmail/v1/users/me/profile")
+        return str(r.json().get("emailAddress", "")) if r.status_code == 200 else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def add_account(label: str, *, open_browser: bool = True) -> str:
+    """Sign in another Google account under a short name. Returns its connector name."""
+    connector = ACCOUNT_PREFIX + _clean_label(label)
+    primary = load_tokens(_file("gmail")) or {}
+    cid = primary.get("client_id") or os.environ.get("JARVIS_GOOGLE_CLIENT_ID", "")
+    sec = primary.get("client_secret") or os.environ.get("JARVIS_GOOGLE_CLIENT_SECRET", "")
+    if not (cid and sec):
+        raise GoogleAuthError("Sign in the main account first (jarvisd setup), then add more.")
+    save_google_client(cid, sec, connector)
+    run_google_oauth(connector, open_browser=open_browser)
+    return connector
+
+
+def remove_account(label: str) -> bool:
+    """Revoke and delete one extra account (the main one is redone with --reauth). True if Google confirmed the revoke."""
+    connector = ACCOUNT_PREFIX + _clean_label(label)
+    revoked = reset_google(connector)
+    try:
+        _file(connector).unlink()
+    except OSError:
+        pass
+    return revoked

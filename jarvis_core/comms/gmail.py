@@ -184,5 +184,79 @@ class GmailClient:
         return {"draft_id": res.get("id", ""), "message_id": msg_id, "url": compose_url(msg_id or res.get("id", ""))}
 
 
+class MultiGmail:
+    """Several Gmail accounts behind the one :class:`GmailClient` interface. Unread mail and searches cover every account
+    (each item says which one in ``meta["account"]``); a thread or reply goes back to the account it came from, and a
+    brand-new email is drafted in the main account."""
+
+    name = "gmail"
+
+    def __init__(self, clients: dict[str, GmailClient]) -> None:
+        if not clients:
+            raise ValueError("MultiGmail needs at least one account")
+        self.clients = clients
+        self.primary = next(iter(clients))
+        self._owner: dict[str, str] = {}  # thread / message id -> account label
+        self.disabled_reason = ""
+
+    def check(self) -> tuple[bool, str]:
+        results = {k: c.check() for k, c in self.clients.items()}
+        if any(ok for ok, _ in results.values()):
+            self.disabled_reason = ""
+            return True, ""
+        self.disabled_reason = "; ".join(f"{k}: {why}" for k, (_, why) in results.items())
+        return False, self.disabled_reason
+
+    def available(self) -> bool:
+        return self.check()[0]
+
+    def can_draft(self) -> bool:
+        return any(c.can_draft() for c in self.clients.values())
+
+    def _tag(self, label: str, items: list[Item]) -> list[Item]:
+        for it in items:
+            it.meta["account"] = label
+            self._owner[it.id] = label
+            if it.thread_id:
+                self._owner[it.thread_id] = label
+        return items
+
+    async def _each(self, call: str, *args: Any, **kw: Any) -> list[Item]:
+        async def one(label: str, c: GmailClient) -> list[Item]:
+            if not c.available():
+                return []
+            try:
+                return self._tag(label, await getattr(c, call)(*args, **kw))
+            except Exception as e:  # noqa: BLE001 - one account being down must not hide the others
+                log.warning("gmail account %s failed: %s", label, e)
+                return []
+
+        batches = await asyncio.gather(*(one(k, c) for k, c in self.clients.items()))
+        merged = [it for b in batches for it in b]
+        merged.sort(key=lambda i: i.timestamp or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        return merged
+
+    async def unread(self, since: datetime | None = None, max_items: int = 15) -> list[Item]:
+        return (await self._each("unread", since, max_items))[:max_items * 2]
+
+    async def search(self, query: str, max_items: int = 8) -> list[Item]:
+        return (await self._each("search", query, max_items))[:max_items]
+
+    async def thread(self, thread_id: str, limit: int = 6) -> list[dict[str, Any]]:
+        order = [self._owner[thread_id]] if thread_id in self._owner else []
+        order += [k for k in self.clients if k not in order]
+        last: Exception | None = None
+        for label in order:
+            try:
+                return await self.clients[label].thread(thread_id, limit)
+            except Exception as e:  # noqa: BLE001 - not this account's thread: try the next
+                last = e
+        raise last or SkillError("I couldn't open that thread, sir.")
+
+    async def create_draft(self, *, thread_id: str | None = None, account: str = "", **kw: Any) -> dict[str, str]:
+        label = account if account in self.clients else self._owner.get(thread_id or "", self.primary)
+        return await self.clients[label].create_draft(thread_id=thread_id, **kw)
+
+
 def compose_url(message_id: str) -> str:
     return f"https://mail.google.com/mail/u/0/#drafts?compose={message_id}"

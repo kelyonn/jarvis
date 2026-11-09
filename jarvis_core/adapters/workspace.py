@@ -176,3 +176,27 @@ class Workspace:
             raise WorkspaceError(f"I can't read {_KIND.get(mime, mime)} files from Drive yet, only docs, sheets, slides and text.")
         text = re.sub(r"\n{3,}", "\n\n", str(text)).strip()
         return f"{meta.get('name', 'File')}:\n{text[:max_chars]}" + ("\n[cut off]" if len(text) > max_chars else "")
+
+
+def events_all(start: datetime, end: datetime, query: str = "", limit: int = 30) -> list[Event]:
+    """Calendar events from every signed-in Google account, merged and de-duplicated. Accounts that fail are skipped;
+    the error is raised only when none of them worked."""
+    from jarvis_core.adapters.google import list_accounts
+
+    out: list[Event] = []
+    seen: set[tuple[str, str]] = set()
+    errors: list[Exception] = []
+    names = list_accounts() or ["gmail"]
+    for name in names:
+        try:
+            for ev in Workspace(name).events(start, end, query, limit):
+                key = (ev.title.strip().lower(), ev.start.isoformat() if ev.start else "")
+                if key not in seen:
+                    seen.add(key)
+                    out.append(ev)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+    if errors and len(errors) == len(names):
+        raise errors[0]
+    out.sort(key=lambda ev: ev.start or datetime.max.astimezone())
+    return out[:limit]

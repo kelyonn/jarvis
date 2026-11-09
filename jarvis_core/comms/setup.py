@@ -9,7 +9,7 @@ from typing import Any
 from jarvis_core.briefing.store import Store
 from jarvis_core.comms.contacts import ContactBook
 from jarvis_core.comms.drafter import Drafter
-from jarvis_core.comms.gmail import GmailClient
+from jarvis_core.comms.gmail import GmailClient, MultiGmail
 from jarvis_core.comms.hub import CommsHub
 from jarvis_core.comms.imessage import IMessageDB
 from jarvis_core.comms.insert import Inserter
@@ -49,12 +49,14 @@ def build_comms(cfg: Config, ctx: ToolContext, store: Store, llm: Any = None, *,
     missing: dict[str, str] = {}
     if "gmail" in apps:
         try:
-            session = gmail_session
-            if session is None:
-                from jarvis_core.adapters.services import GoogleSession
+            if gmail_session is not None:
+                gmail = GmailClient(gmail_session)
+            else:
+                from jarvis_core.adapters.google import GoogleSession, account_label, list_accounts
 
-                session = GoogleSession("gmail")
-            gmail = GmailClient(session)
+                names = list_accounts() or ["gmail"]
+                clients = {account_label(n): GmailClient(GoogleSession(n)) for n in names}
+                gmail = MultiGmail(clients) if len(clients) > 1 else next(iter(clients.values()))
         except Exception as e:
             missing["gmail"] = f"Google sign-in support is unavailable ({e.__class__.__name__})"
 
