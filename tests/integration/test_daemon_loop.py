@@ -415,6 +415,23 @@ async def test_echo_filter_matches_a_partial_tail_with_different_number_formats(
         await rig.stop()
 
 
+async def test_echo_filter_catches_homophone_garbled_speaker_leakage():
+    # On speakers (no AEC) the recogniser sometimes mangles words it picks up from Jarvis's own voice into
+    # near-homophones ("Stfu"/"leetcode" -> "sdfu"/"leap code"); the match must not depend on the exact words.
+    rig = await Rig(replies=["Tomorrow's meeting is Stfu and do leetcode at three, with heavy drizzle expected "
+                             "and a 99 percent chance of rain. That's it."], stt_texts=["what's new"]).start()
+    try:
+        await rig.wake_and_speak()
+        await rig.wait_state(State.FOLLOW_UP)
+        d = rig.daemon
+        assert d._is_own_echo("is sdfu and do leap code at the")
+        assert d._is_own_echo("sdfu and do leap code at")
+        assert not d._is_own_echo("can you move that meeting to four instead")
+        assert not d._is_own_echo("what's on my calendar for friday")
+    finally:
+        await rig.stop()
+
+
 async def test_echo_during_follow_up_does_not_end_the_conversation():
     reply = "Here are three things. Battery is at fifteen percent, and Ethereum is up by seven percent."
     rig = await Rig(

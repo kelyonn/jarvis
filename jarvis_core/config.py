@@ -70,7 +70,10 @@ class ActivationCfg(_Model):
     follow_up_seconds: float = 8.0
     # Once you are properly talking (2+ turns), Jarvis keeps listening this long between replies, like a person would.
     conversation_follow_up_seconds: float = 14.0
-    barge_in: bool = True  # only takes effect on frontends with echo cancellation (the Shell has none)
+    barge_in: bool = True  # talking over Jarvis stops it: on headphones always, on speakers only with a voiceprint (see below)
+    # Off by default: on speakers there is no echo cancellation, and a voiceprint alone does not stop Jarvis hearing itself
+    # (it interrupted its own replies). Use "Hey Jarvis", the Stop button or Option+Space to interrupt on speakers.
+    barge_in_speakers: bool = False
     end_silence_ms: int = 600
     follow_up_end_silence_ms: int = 700
     no_speech_timeout_s: float = 5.0

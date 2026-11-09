@@ -358,7 +358,11 @@ class Daemon:
 
     def _voice_barge_ok(self) -> bool:
         a = self.cfg.activation
-        return a.barge_in and (self.frontend.supports_aec or self._headphones)
+        if not a.barge_in:
+            return False
+        # Speakers have no echo cancellation: Jarvis's own voice would trip it, so there only an enrolled voiceprint
+        # (checked in _is_owner before anything is interrupted) can be trusted to tell you from Jarvis.
+        return self.frontend.supports_aec or self._headphones or (a.barge_in_speakers and self._speaker_check_on())
 
     async def _refresh_output_kind(self) -> None:
         """Is audio going to headphones/earbuds? Then the mic can't hear Jarvis, so talking over it can interrupt."""
@@ -609,8 +613,7 @@ class Daemon:
         elif st in (State.SPEAKING, State.ANNOUNCING) or (st == State.THINKING and self.cu_active):
             a = self.cfg.activation
             if (
-                st != State.THINKING
-                and a.listen_mode == "wake_word"
+                a.listen_mode == "wake_word"
                 and a.wake_interrupt
                 and self.wake
                 and not self._muted
@@ -1092,7 +1095,7 @@ class Daemon:
         heard_words = heard.split()
         said_words = set(" ".join(recent).split())
         for r in recent:
-            if r and (fuzz.ratio(heard, r) >= 78 or (len(heard) > 12 and fuzz.partial_ratio(heard, r) >= 88)):
+            if r and (fuzz.ratio(heard, r) >= 78 or (len(heard) > 12 and fuzz.partial_ratio(heard, r) >= 80)):
                 return True
         if len(heard_words) >= 4 and said_words:
             covered = sum(1 for w in heard_words if w in said_words) / len(heard_words)
@@ -1184,6 +1187,8 @@ class Daemon:
             await self.cancel_everything()
 
     async def cancel_everything(self) -> None:
+        if self.sm.state in (State.SPEAKING, State.ANNOUNCING, State.THINKING):
+            self._note_interruption()  # the cut-off reply is stored as only what was spoken, so the next turn moves on
         await self._cancel_turn()
         await self.frontend.stop_audio()
         self._endpointer = None
