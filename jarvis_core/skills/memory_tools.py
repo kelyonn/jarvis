@@ -6,7 +6,7 @@ from typing import Any
 
 from jarvis_core.errors import SkillError
 from jarvis_core.interfaces import Fact
-from jarvis_core.memory.extractor import parse_statement
+from jarvis_core.memory.extractor import looks_like_action_report, parse_statement
 from jarvis_core.skills.base import Decision, S, Tool, ToolContext, ToolRegistry, obj
 
 LAST_KEY = "last_fact_id"
@@ -28,6 +28,8 @@ async def _remember(ctx: ToolContext, a: dict[str, Any]) -> str:
     text = (a.get("text") or "").strip()
     if not text:
         raise SkillError("What shall I remember, sir?")
+    if looks_like_action_report(text):
+        raise SkillError("That sounds like a task, not a fact about you. Use the notes or reminders tools for it.")
     fact = parse_statement(text)
     ctx.state[LAST_KEY] = mem.add(fact)
     ctx.audit.write("memory_add", fact_kind=fact.kind, chars=len(fact.text))

@@ -47,7 +47,7 @@ async def _note_create(ctx: ToolContext, a: dict[str, Any]) -> str:
     title = a["title"].strip()
     body = f"<h1>{html.escape(title)}</h1>" + _html_body(a.get("body", ""))
     await ctx.osa('on run argv\ntell application "Notes" to make new note with properties {body:(item 1 of argv)}\nend run', body)
-    return f"Created a note titled {title}."
+    return f"Created a note titled {title} in the Apple Notes app (not a file on the Desktop)."
 
 
 async def _note_append(ctx: ToolContext, a: dict[str, Any]) -> str:

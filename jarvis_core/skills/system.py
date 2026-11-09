@@ -261,7 +261,11 @@ async def _time_now(ctx: ToolContext, a: dict[str, Any]) -> str:
 
 async def _clip_read(ctx: ToolContext, a: dict[str, Any]) -> str:
     res = await ctx.run(["pbpaste"])
-    return res.out[:4000] or "The clipboard is empty."
+    text = res.out
+    if not text.strip():
+        return "The clipboard has no text in it. It may hold an image or a file."
+    more = f"\n(only the first 4000 of {len(text)} characters)" if len(text) > 4000 else ""
+    return text[:4000] + more
 
 
 async def _clip_write(ctx: ToolContext, a: dict[str, Any]) -> str:

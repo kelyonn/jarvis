@@ -22,7 +22,7 @@ _KEYWORDS: dict[str, str] = {
     "power": r"battery|\bsleep\b|restart|shut ?down|reboot|empty (?:the )?trash|awake|caffeinate",
     "connectivity": r"wi-?fi|bluetooth|airpods|headphones|headset|connect to|disconnect",
     "notes": r"\bnotes?\b|jot|write (?:this )?down",
-    "reminders": r"remind|reminder|to-?do|checklist",
+    "reminders": r"remind|reminder|to-?do|checklist|tell me to\b|ping me|don'?t let me forget",
     "timers": r"timer|alarm|countdown|stopwatch|wake me",
     "browser": r"\btabs?\b|browser|chrome|safari|webpage|website|web page|search for",
     "clipboard": r"clipboard|copied|\bpaste|\bcopy\b",
@@ -53,3 +53,17 @@ def select_categories(text: str, sticky: set[str] | None = None) -> set[str] | N
     if not matched:
         return None
     return set(CORE) | matched | (sticky or set())
+
+
+# Speech recognition often turns "note" into "node" ("create a node called groceries"); fix it before routing so the notes tools
+# are offered and the model is not left guessing.
+_ASR_FIXES = (
+    (re.compile(r"\bnodes?\b(?=\s+(?:called|named|titled|about|for|on|with|saying|that says)\b)", re.I), lambda m: "note" if m.group(0).lower() == "node" else "notes"),
+    (re.compile(r"\b(?:create|make|add|write|take|start)\s+(?:a\s+|an\s+|the\s+|new\s+|me\s+a\s+)*(node)\b", re.I), lambda m: m.group(0)[: m.start(1) - m.start(0)] + "note"),
+)
+
+
+def fix_asr(text: str) -> str:
+    for rx, rep in _ASR_FIXES:
+        text = rx.sub(rep, text)
+    return text

@@ -33,6 +33,18 @@ EXTRACT_SYSTEM = (
 )
 
 
+# Jarvis's own report of something it did ("Note groceries created", "Sent to Amma"), or a to-do, is not a fact about the user.
+_ACTION_REPORT = re.compile(
+    r"^\W*(?:done|sent|noted|saved|created|added|set)\b|\b(?:note|node|reminder|timer|list|event|draft)\b.{0,60}\b(?:created|added|saved|set|sent)\b|"
+    r"\b(?:created|added|saved)\b.{0,40}\b(?:note|node|reminder|list)\b|\bsent to\b",
+    re.I,
+)
+
+
+def looks_like_action_report(text: str) -> bool:
+    return bool(_ACTION_REPORT.search(text or ""))
+
+
 def parse_statement(text: str) -> Fact:
     """Build a Fact from an explicit 'remember ...' statement. 'my brother is Arjun' becomes a contact alias."""
     t = text.strip().rstrip(".!")
@@ -92,7 +104,7 @@ class Extractor:
                 text = str(d.get("text", "")).strip()
             except (TypeError, ValueError):
                 continue
-            if conf < CONFIDENCE_MIN or len(text) < 6:
+            if conf < CONFIDENCE_MIN or len(text) < 6 or looks_like_action_report(text):
                 continue
             fact = Fact(kind=kind, text=text[:300], confidence=conf)
             if kind == "person":

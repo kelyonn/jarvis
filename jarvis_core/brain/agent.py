@@ -17,7 +17,7 @@ from jarvis_core.brain.history import ConversationHistory
 from jarvis_core.brain.modes import TurnPlan, deliberation_messages, plan_turn
 from jarvis_core.brain.persona import build_system_prompt, wrap_untrusted
 from jarvis_core.brain.thinking import ThinkFilter, strip_think
-from jarvis_core.brain.toolselect import STICKY_TURNS, select_categories
+from jarvis_core.brain.toolselect import STICKY_TURNS, fix_asr, match_categories, select_categories
 from jarvis_core.config import Config
 from jarvis_core.errors import PermissionMissing, ShortcutMissing, SkillError
 from jarvis_core.interfaces import LLM, TextDelta, ToolCallEvent
@@ -31,6 +31,9 @@ MAX_RESULT_CHARS = 6000
 
 ContextProvider = Callable[[str], dict[str, Any]]
 
+
+_PAGE_OPENERS = frozenset({"open_url", "open_site", "search_in_browser"})
+_PAGE_OPENER_LIMIT = 3  # pages opened in a single turn before Jarvis stops and asks
 
 _NUDGE = (
     "You replied without calling a tool. If the request needs an action or live information (open or close an app, "
@@ -58,6 +61,9 @@ _COMMAND_VERBS = frozenset(
     "skip shuffle create".split()
 )
 _LEAD_WORDS = frozenset("please can could would you jarvis jarvis hey hi okay ok just then now and also".split())
+_YES_DRAFT = re.compile(
+    r"^\W*(?:(?:yes|yeah|yep|yup|ok|okay|sure|please|go ahead|alright)\W+)*(?:do it|go ahead|put it in|put it there|insert it|"
+    r"send it(?: to (?:her|him|them))?|send that|send|yes|yeah|yep|yup|ok|okay|sure|please do)\W*$", re.I)
 _REFUSAL = re.compile(
     r"\b(?:can't|cannot|can not|unable|sorry|don't have|do not have|no way to|not able|afraid|couldn't|could not|didn't|"
     r"did not|isn't|is not|wasn't|not found|no such|failed|error|problem|trouble)\b", re.I)
@@ -163,6 +169,22 @@ class Agent:
                 yield reply
                 return
             # Unclear or expired: treat the utterance as a fresh request.
+        user_text = fix_asr(user_text)
+        if self.ctx.state.get("draft") is not None and _YES_DRAFT.match(user_text):
+            # A draft is waiting and the user said yes (or "send it"): put it in the app ourselves rather than trusting the
+            # model to call insert_draft, which it sometimes only claims to have done.
+            tool = self.registry.get("insert_draft")
+            if tool is not None:
+                self.history.add({"role": "user", "content": user_text})
+                self.tools_used = ["insert_draft"]
+                result = re.sub(r"</?untrusted[^>]*>\s*", "", await self._invoke(tool, {})).strip()
+                if result.startswith("Error:"):
+                    result = result.removeprefix("Error:").strip()
+                elif re.match(r"^\W*send\b", user_text, re.I):
+                    result += " I never send for you, so press Return when you're ready."
+                self.history.add({"role": "assistant", "content": result})
+                yield result
+                return
         self.history.add({"role": "user", "content": user_text})
         async for chunk in self._loop(user_text):
             yield chunk
@@ -250,6 +272,32 @@ class Agent:
         if tf.thought:
             log.debug("thought (%s): %s", self.plan.technique if self.plan else "?", tf.thought[:600])
 
+    _SEND_CLAIM = re.compile(r"\b(?:sent|delivered|posted|messaged)\b|\b(?:she|he|they)(?:'ll| will) (?:see|get|receive) it\b", re.I)
+    _NEGATED = re.compile(r"\b(?:never|not|haven'?t|hasn'?t|didn'?t|won'?t|can'?t|couldn'?t|no)\b|n't", re.I)
+    # what the user asked for -> the tool category that has to have run for "done" to be true
+    _NEEDS = (
+        ("notes", re.compile(r"\b(?:create|make|add|write|take|jot|save)\b.*\bnotes?\b|\bnote (?:down|that)\b", re.I)),
+        ("reminders", re.compile(r"\bremind(?:er)? me\b|\b(?:create|add|set|make)\b.*\breminder\b|\btell me to\b", re.I)),
+        ("timers", re.compile(r"\b(?:set|start)\b.*\b(?:timer|alarm)\b", re.I)),
+    )
+
+    def _reconcile(self, user_text: str, text: str) -> str | None:
+        """Catch a reply that says something was sent, saved or created when no tool did it. ``None`` means the reply is fine."""
+        if not text:
+            return None
+        used = {t.category for n in self.tools_used if (t := self.registry.get(n)) is not None}
+        for m in self._SEND_CLAIM.finditer(text):
+            if not self._NEGATED.search(text[max(0, m.start() - 30): m.start()]):
+                return ("I never send messages myself. The draft is sitting in the compose box, not sent. "
+                        "Press Return when you're ready to send it.")
+        if _REFUSAL.search(text) or text.rstrip().endswith("?"):
+            return None
+        for cat, rx in self._NEEDS:
+            if rx.search(user_text or "") and cat not in used and cat in (match_categories(user_text) | {cat}):
+                what = {"notes": "the note", "reminders": "the reminder", "timers": "the timer"}[cat]
+                return f"I haven't actually made {what}: that didn't go through. Say it again and I'll redo it."
+        return None
+
     def _offered_categories(self, user_text: str) -> set[str] | None:
         if not self.cfg.llm.tool_selection:
             return None
@@ -308,9 +356,13 @@ class Agent:
                 if claimed and not nudged:
                     nudged = True  # retry once, telling the model to act instead of describing
                     continue
+                fixed = None if claimed else self._reconcile(user_text, text)
                 if claimed:
-                    text = "I'm sorry sir, I wasn't able to do that one. Could you put it another way?"
+                    text = "I'm sorry, I wasn't able to do that one. Could you put it another way?"
                     yield text
+                elif fixed:
+                    text = fixed  # the reply claimed something no tool did: say what really happened instead
+                    yield (" " if flushed else "") + text
                 elif not flushed and text:
                     yield "".join(held)
                 if not text and self.tools_used:
@@ -338,6 +390,9 @@ class Agent:
                 sig = f"{c.name}:{json.dumps(c.arguments, sort_keys=True, default=str)}"
                 call_counts[sig] = call_counts.get(sig, 0) + 1
                 looping = looping or call_counts[sig] >= 3  # the same call a third time is a loop, not progress
+                call_counts[c.name] = call_counts.get(c.name, 0) + 1
+                # opening pages one after another with different URLs is flailing too: stop after a few in one turn
+                looping = looping or (c.name in _PAGE_OPENERS and call_counts[c.name] > _PAGE_OPENER_LIMIT)
             if looping:
                 break
             run = asyncio.create_task(self._run_calls(calls))

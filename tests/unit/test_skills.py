@@ -754,3 +754,103 @@ def test_timer_in_seconds_is_routed_without_the_model():
                        ("set a timer for 1 minute 30 seconds", {"minutes": "1", "seconds": "30"})]:
         m = r.match(text)
         assert m and m.tool == "timer_set" and m.args == args, (text, m)
+
+
+# ------------------------------------------------------ replies must match what tools did
+
+
+async def test_reply_claiming_a_send_is_corrected(tmp_path, apps_dir):
+    agent, _llm, _ctx = make_agent(tmp_path, apps_dir, [[call("current_time", {})], "Sent to Amma on WhatsApp. She'll see it shortly."])
+    out = await collect(agent.respond("yeah do it"))
+    assert "sent" in out.lower() and "never send" in out.lower() and "Return" in out
+
+
+async def test_negated_send_is_left_alone(tmp_path, apps_dir):
+    agent, _llm, _ctx = make_agent(tmp_path, apps_dir, [[call("current_time", {})], "It's in the box, not sent."])
+    assert await collect(agent.respond("what now")) == "It's in the box, not sent."
+
+
+async def test_note_claimed_but_a_different_tool_ran(tmp_path, apps_dir):
+    agent, _llm, _ctx = make_agent(tmp_path, apps_dir, [
+        [call("remember", {"text": "groceries"})],
+        'Done. Note "groceries" created.',
+    ])
+    out = await collect(agent.respond("create a note called groceries with potatoes"))
+    assert "haven't actually made the note" in out
+
+
+def test_asr_node_becomes_note():
+    from jarvis_core.brain.toolselect import fix_asr, match_categories
+
+    fixed = fix_asr("create a node called groceries and underneath that add potatoes")
+    assert fixed.startswith("create a note called groceries")
+    assert "notes" in match_categories(fixed)
+    assert "reminders" in match_categories("tell me to call Rahul tomorrow at 5")
+    assert fix_asr("the node.js server") == "the node.js server"
+
+
+def test_remember_refuses_action_reports():
+    from jarvis_core.memory.extractor import looks_like_action_report
+
+    assert looks_like_action_report('Node "groceries" created with children: potatoes. Note "Call Rahul" added.')
+    assert looks_like_action_report("Sent to Amma on WhatsApp")
+    assert not looks_like_action_report("my locker code is 1775")
+    assert not looks_like_action_report("I prefer dark mode")
+
+
+# ------------------------------------------------------------------ Dia is off limits; open_app falls back
+
+
+async def test_dia_is_never_quit_or_closed(tmp_path, apps_dir):
+    from jarvis_core.errors import SkillError
+    from jarvis_core.policy.protected import command_targets_protected
+
+    runner = FakeRunner()
+    ctx = make_ctx(tmp_path, apps_dir, runner)
+    reg = build_registry()
+    for tool, args in (("quit_app", {"name": "Dia"}), ("quit_app", {"name": "dia"}), ("force_quit_app", {"name": "Dia"})):
+        with pytest.raises(SkillError, match="off limits"):
+            await reg.get(tool).handler(ctx, args)
+    assert not runner.calls
+    assert command_targets_protected("pkill Dia") and command_targets_protected("osascript -e 'tell application \"Dia\" to quit'")
+    assert not command_targets_protected("ls ~/Diagrams") and not command_targets_protected("echo hello")
+    assert reg.get("run_command").decide(ctx, {"command": "killall Dia"}).action == "block"
+
+
+async def test_open_app_falls_back_to_a_website(tmp_path, apps_dir):
+    runner = FakeRunner()
+    ctx = make_ctx(tmp_path, apps_dir, runner)
+    out = await build_registry().get("open_app").handler(ctx, {"name": "youtube"})
+    assert "youtube.com" in out and runner.calls[-1] == ["open", "https://www.youtube.com"]
+
+
+async def test_page_opening_flailing_stops(tmp_path, apps_dir):
+    urls = [[call("open_url", {"url": f"https://example.com/{i}"}, f"c{i}")] for i in range(6)]
+    agent, _llm, ctx = make_agent(tmp_path, apps_dir, [*urls, "ok"])
+    await collect(agent.respond("open a leetcode problem"))
+    assert sum(1 for c in ctx.runner.calls if c[:1] == ["open"]) <= 3
+
+
+async def test_yes_puts_a_pending_draft_in_the_app_without_trusting_the_model(tmp_path, apps_dir):
+    agent, _llm, ctx = make_agent(tmp_path, apps_dir, ["Draft ready in your compose box."])
+    ctx.state["draft"] = object()  # a draft is waiting
+
+    class FakeInsert:
+        async def handler(self, c, a):
+            c.state.pop("draft", None)
+            return "The draft is ready in WhatsApp, sir. Over to you."
+
+    class T:
+        name = "insert_draft"
+        category = "messaging"
+        handler = FakeInsert().handler
+        risk = None
+        timeout_s = 10
+        untrusted_output = False
+
+        def decide(self, *_):
+            return None
+
+    agent.registry.get = lambda name, _g=agent.registry.get: T() if name == "insert_draft" else _g(name)
+    out = await collect(agent.respond("send it"))
+    assert out.startswith("The draft is ready in WhatsApp") and "never send" in out and "draft" not in ctx.state

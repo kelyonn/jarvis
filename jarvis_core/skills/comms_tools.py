@@ -190,6 +190,7 @@ async def _draft_message(ctx: ToolContext, a: dict[str, Any]) -> str:
     except ValueError:
         raise SkillError("What would you like to say, sir?") from None
     ctx.state[DRAFT_KEY] = draft
+    ctx.state.pop("last_inserted", None)
     ctx.state.pop("alert_offer", None)
     label = APP_LABEL.get(ch.app, ch.app)
     subj = f" Subject: {draft.subject}." if ch.app == "gmail" else ""
@@ -199,6 +200,8 @@ async def _draft_message(ctx: ToolContext, a: dict[str, Any]) -> str:
 def _current(ctx: ToolContext) -> Draft:
     d = ctx.state.get(DRAFT_KEY)
     if d is None:
+        if ctx.state.get("last_inserted"):
+            raise SkillError("That draft is already in the compose box. I never send messages, so press Return there when you're ready.")
         raise SkillError("There's no draft in progress, sir.")
     return d
 
@@ -227,6 +230,7 @@ async def _insert_draft(ctx: ToolContext, a: dict[str, Any]) -> str:
     d = _current(ctx)
     res = await _svc(ctx, "inserter").insert(d)
     ctx.state.pop(DRAFT_KEY, None)
+    ctx.state["last_inserted"] = True
     return res.message
 
 

@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from rapidfuzz import fuzz, process
 
 from jarvis_core.errors import SkillError
+from jarvis_core.policy.protected import guard
 from jarvis_core.skills.base import B, Decision, Risk, S, Tool, ToolContext, ToolRegistry, obj
 
 ALIASES = {
@@ -100,8 +101,26 @@ async def running_apps(ctx: ToolContext) -> list[str]:
     return [s.strip() for s in out.split(",") if s.strip()]
 
 
+_FILLER_TAIL = re.compile(r"\s+(?:on|in|at|from|for)\s+.*$|\s+(?:app|application|website|site|mode|routine)$", re.I)
+
+
 async def _open_app(ctx: ToolContext, a: dict[str, Any]) -> str:
-    app = resolve_app(ctx, a["name"])
+    try:
+        app = resolve_app(ctx, a["name"])
+    except SkillError as err:
+        # Not an installed app: it may be a website ("youtube") or a routine ("work mode"). Try those instead of failing.
+        said = a["name"].strip().lower()
+        core = _FILLER_TAIL.sub("", said).strip()
+        if said.endswith(("mode", "routine")) or core in {n.lower() for n in ctx.cfg.routines}:
+            from jarvis_core.skills.routines import find_routine, run_routine_by_name  # noqa: PLC0415
+
+            try:
+                return await run_routine_by_name(ctx, find_routine(ctx, core))
+            except SkillError:
+                pass
+        if core in SITES or said in SITES:
+            return await _open_site(ctx, {"name": core if core in SITES else said})
+        raise err
     res = await ctx.run(["open", "-a", app])
     if not res.ok:
         raise SkillError(f"I couldn't open {app}, sir.")
@@ -117,13 +136,17 @@ async def _focus_app(ctx: ToolContext, a: dict[str, Any]) -> str:
 
 
 async def _quit_app(ctx: ToolContext, a: dict[str, Any]) -> str:
+    guard(a["name"], ctx.cfg)
     app = resolve_app(ctx, a["name"])
+    guard(app, ctx.cfg)
     await ctx.osa("on run argv\ntell application (item 1 of argv) to quit\nend run", app)
     return f"Asked {app} to quit."
 
 
 async def _force_quit(ctx: ToolContext, a: dict[str, Any]) -> str:
+    guard(a["name"], ctx.cfg)
     app = resolve_app(ctx, a["name"])
+    guard(app, ctx.cfg)
     res = await ctx.run(["pkill", "-x", app])
     if not res.ok:
         raise SkillError(f"{app} doesn't seem to be running, sir.")

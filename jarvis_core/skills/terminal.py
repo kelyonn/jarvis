@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from jarvis_core.errors import SkillError
+from jarvis_core.policy.protected import command_targets_protected
 from jarvis_core.policy.shell_policy import classify_command, split_argv
 from jarvis_core.skills.base import Decision, S, Tool, ToolContext, ToolRegistry, obj
 
@@ -44,6 +45,8 @@ def _classify(ctx: ToolContext, a: dict[str, Any]) -> Decision:
                 return Decision.block("that folder holds secrets")
         except Exception:  # noqa: BLE001 - an unresolvable folder is checked again when the command runs
             pass
+    if command_targets_protected(a.get("command", ""), ctx.cfg):
+        return Decision.block("that app is off limits and is never closed")
     return classify_command(a.get("command", ""), ctx.cfg.safety.terminal_allowlist_no_confirm)
 
 

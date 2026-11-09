@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from jarvis_core.errors import SkillError
+from jarvis_core.policy.protected import guard
 from jarvis_core.skills.apps import target_app
 from jarvis_core.skills.base import B, E, I, N, S, Tool, ToolContext, ToolRegistry, obj
 
@@ -172,6 +173,7 @@ async def _fullscreen(ctx: ToolContext, a: dict[str, Any]) -> str:
 async def _close_window(ctx: ToolContext, a: dict[str, Any]) -> str:
     """Close the front window of an app (the app keeps running)."""
     app = await resolve_app(ctx, a.get("app") or "")
+    guard(app, ctx.cfg)
     try:
         await ctx.shell_request("ax.close_window", {"app": app})
     except SkillError:

@@ -7,6 +7,7 @@ from datetime import timedelta
 from typing import Any
 
 from jarvis_core.errors import SkillError
+from jarvis_core.policy.protected import guard, is_protected
 from jarvis_core.skills.apps import running_apps
 from jarvis_core.skills.base import E, I, Risk, S, Tool, ToolContext, ToolRegistry, obj
 from jarvis_core.skills.browser import active_browser, chromium_script
@@ -221,6 +222,7 @@ async def _close_tab(ctx: ToolContext, a: dict[str, Any]) -> str:
 
 async def _close_all_tabs(ctx: ToolContext, a: dict[str, Any]) -> str:
     b = await active_browser(ctx, a.get("browser"))
+    guard(b, ctx.cfg)
     await ctx.osa(chromium_script('tell application "APPNAME" to close front window', b))
     return f"Closed the front {b} window with all its tabs."
 
@@ -230,7 +232,7 @@ async def _close_all_tabs(ctx: ToolContext, a: dict[str, Any]) -> str:
 
 async def _quit_all(ctx: ToolContext, a: dict[str, Any]) -> str:
     keep = KEEP_RUNNING | {x.strip() for x in (a.get("keep") or "").split(",") if x.strip()}
-    victims = [app for app in await running_apps(ctx) if app not in keep]
+    victims = [app for app in await running_apps(ctx) if app not in keep and not is_protected(app, ctx.cfg)]
     if not victims:
         return "There's nothing else open, sir."
     for app in victims:

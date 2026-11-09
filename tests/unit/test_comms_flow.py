@@ -299,7 +299,7 @@ async def test_draft_revise_insert_flow(tmp_path):
     assert res == "The draft is ready in WhatsApp, sir. Over to you."
     assert runner.calls[0][1].startswith("whatsapp://send?phone=919876500001&text=Friday%20works%21")
     assert "draft" not in ctx.state
-    with pytest.raises(SkillError, match="no draft in progress"):
+    with pytest.raises(SkillError, match="already in the compose box"):
         await call(reg, ctx, "insert_draft")
     store.close()
 

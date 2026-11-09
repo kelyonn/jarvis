@@ -225,6 +225,7 @@ class SafetyCfg(_Model):
         default_factory=lambda: ["ls", "pwd", "df -h", "uptime"]
     )
     transcript_retention_days: int = 7
+    protected_apps: list[str] = Field(default_factory=list)  # never quit or closed; Dia is always protected on top of these
 
 
 class MemoryCfg(_Model):
