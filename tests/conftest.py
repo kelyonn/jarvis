@@ -11,6 +11,11 @@ def jarvis_home(tmp_path, monkeypatch):
     home = tmp_path / "jarvis_home"
     monkeypatch.setenv("JARVIS_HOME", str(home))
     monkeypatch.delenv("NIM_API_KEY", raising=False)
+    # The Google adapter migrates tokens from ~/.openjarvis; point that at an empty folder so tests never pick up
+    # (or copy) the real sign-in on this machine.
+    from jarvis_core.adapters import google
+
+    monkeypatch.setattr(google, "_LEGACY_DIR", tmp_path / "openjarvis_legacy")
     return home
 
 

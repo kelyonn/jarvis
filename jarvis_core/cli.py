@@ -214,7 +214,7 @@ def _cmd_google(args: argparse.Namespace) -> int:
     from jarvis_core.adapters import google as gg
     from jarvis_core.adapters import services as oj
 
-    if args.add:
+    if args.add is not None:
         try:
             connector = gg.add_account(args.add)
         except gg.GoogleAuthError as e:
@@ -222,7 +222,7 @@ def _cmd_google(args: argparse.Namespace) -> int:
             return 1
         print(f"Added {gg.account_label(connector)}: {gg.account_email(connector) or 'signed in'}. Restart Jarvis to use it.")
         return 0
-    if args.remove:
+    if args.remove is not None:
         try:
             revoked = gg.remove_account(args.remove)
         except gg.GoogleAuthError as e:

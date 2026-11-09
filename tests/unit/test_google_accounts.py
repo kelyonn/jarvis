@@ -183,7 +183,7 @@ def test_build_comms_single_account_uses_plain_gmail_client(monkeypatch, tmp_pat
     monkeypatch.setattr(gg, "GoogleSession", lambda connector: SimpleNamespace(connector=connector))
     store = Store(tmp_path / "state.db")
     hub = build_comms(Config(), make_tool_ctx(), store)
-    assert type(hub.gmail) is GmailClient
+    assert type(hub.readers["gmail"]) is GmailClient
     store.close()
 
 
@@ -193,9 +193,9 @@ def test_build_comms_several_accounts_wires_a_multi_gmail(monkeypatch, tmp_path)
     monkeypatch.setattr(gg, "GoogleSession", lambda connector: SimpleNamespace(connector=connector))
     store = Store(tmp_path / "state.db")
     hub = build_comms(Config(), make_tool_ctx(), store)
-    assert isinstance(hub.gmail, MultiGmail)
-    assert set(hub.gmail.clients) == {"main", "work"}
-    assert hub.gmail.primary == "main"  # the primary account is offered first for brand-new emails
+    assert isinstance(hub.readers["gmail"], MultiGmail)
+    assert set(hub.readers["gmail"].clients) == {"main", "work"}
+    assert hub.readers["gmail"].primary == "main"  # the primary account is offered first for brand-new emails
     store.close()
 
 
@@ -205,7 +205,7 @@ def test_build_comms_no_accounts_falls_back_to_a_bare_gmail_connector(monkeypatc
     monkeypatch.setattr(gg, "GoogleSession", lambda connector: SimpleNamespace(connector=connector))
     store = Store(tmp_path / "state.db")
     hub = build_comms(Config(), make_tool_ctx(), store)
-    assert type(hub.gmail) is GmailClient
+    assert type(hub.readers["gmail"]) is GmailClient
     store.close()
 
 
@@ -213,7 +213,7 @@ def test_build_comms_no_accounts_falls_back_to_a_bare_gmail_connector(monkeypatc
 
 
 def ns(**kw):
-    return SimpleNamespace(add=None, remove=None, list=False, reauth=False, **kw)
+    return SimpleNamespace(**{"add": None, "remove": None, "list": False, "reauth": False, **kw})
 
 
 def test_cli_google_add_success(monkeypatch, capsys):
