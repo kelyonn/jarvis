@@ -29,6 +29,7 @@ class BriefingScheduler:
         announce: Callable[..., Awaitable[bool]],
         is_free: Callable[[], bool],
         gate: Callable[[], bool] | None = None,
+        on_start: Callable[[], Awaitable[None]] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now().astimezone(),
     ) -> None:
         self.cfg = cfg
@@ -37,6 +38,7 @@ class BriefingScheduler:
         self._announce = announce
         self._is_free = is_free
         self._gate = gate or (lambda: True)
+        self._on_start = on_start
         self._now = now
         self._task: asyncio.Task | None = None
         self._awake = True
@@ -114,6 +116,8 @@ class BriefingScheduler:
         self._busy = True
         try:
             log.info("delivering %s briefing (slot %s)", mode, slot)
+            if self._on_start:
+                await self._on_start()  # show the orb now: collection below can take several seconds
             ok = await self.service.deliver(self._announce, mode=mode, day=self._day(now), slot=slot)
             if ok:
                 for s in covered:

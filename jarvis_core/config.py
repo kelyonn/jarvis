@@ -128,7 +128,9 @@ class BriefingCfg(_Model):
     first_open_full_brief: bool = True
     slots: list[str] = Field(default_factory=lambda: ["13:00", "19:00"])
     deliver_missed_slots_on_wake: bool = True
-    target_minutes: float = 1.0
+    target_minutes: float = 0.6  # a normal full brief is about this long (spoken)
+    max_minutes: float = 1.0  # never longer than this, unless something is genuinely urgent
+    urgent_max_minutes: float = 1.4  # allowance when a VIP message, imminent meeting or big market move deserves the time
     day_rollover_hour: int = 3  # a new briefing day starts after this hour (match user.day_end_hour)
     include_linkedin: bool = False
     sections: list[str] = Field(

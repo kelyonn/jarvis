@@ -105,7 +105,7 @@ def _attach_briefing(rt: Runtime, llm) -> None:
     d = rt.daemon
     sched = BriefingScheduler(
         rt.cfg, service, store, announce=d.announce, is_free=lambda: d.is_free,
-        gate=lambda: rt.extras.get("gate", lambda: True)(),
+        gate=lambda: rt.extras.get("gate", lambda: True)(), on_start=d.show_preparing,
     )
     d.hooks.on_ready.append(sched.on_ready)
     d.hooks.on_resume.append(sched.on_resume)
@@ -113,6 +113,7 @@ def _attach_briefing(rt: Runtime, llm) -> None:
     d.hooks.on_idle.append(sched.on_idle)
 
     async def brief_now() -> None:
+        await d.show_preparing()
         await service.deliver(d.announce, mode="full", day=sched._day(sched._now()), slot=f"manual-{int(sched._now().timestamp())}")
 
     d.hooks.on_command["brief_now"] = brief_now

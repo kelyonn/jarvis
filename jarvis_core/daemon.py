@@ -1194,6 +1194,11 @@ class Daemon:
 
     # ----------------------------------------------------- announcements
 
+    async def show_preparing(self) -> None:
+        """Let the orb appear right away while a briefing is being collected, well before there is anything to say."""
+        with contextlib.suppress(Exception):
+            await self.frontend.set_state(State.THINKING.value)
+
     async def narrate(self, text: str) -> None:
         """Say a short progress line from inside a running turn (computer use). Never changes state."""
         if not text or self._muted or self.sm.state in (State.PAUSED, State.IDLE):

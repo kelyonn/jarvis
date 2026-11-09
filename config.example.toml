@@ -42,7 +42,9 @@ day_rollover_hour = 3            # waking after this hour starts a new day: firs
 first_open_full_brief = true
 slots = ["13:00", "19:00"]       # REPLACE with your custom times
 deliver_missed_slots_on_wake = true
-target_minutes = 1.0
+target_minutes = 0.6             # a normal full brief, spoken
+max_minutes = 1.0                # hard ceiling
+urgent_max_minutes = 1.4         # only when something urgent deserves it
 include_linkedin = false
 sections = ["greeting","weather","calendar","email","messages","markets","news_tech","reminders"]
 

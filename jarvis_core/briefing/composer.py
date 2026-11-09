@@ -116,7 +116,9 @@ Rules:
 - Be brief. One sentence per section, two at most for the calendar. Weather: conditions and temperature only. Email and
   messages: the count plus only VIP or urgent senders. News: one sentence per topic, leading with the single biggest story.
   Drop minor details, figures that don't matter and anything routine.
-- Target about {words} words in total. Never exceed {max_words}.
+- Target about {words} words in total. Never exceed {max_words} words. Only go past {words} when something is genuinely
+  relevant to {name} right now (a VIP message, a meeting within the hour, a big market move, severe weather); a quiet day gets a
+  short brief. Never go past {urgent_words} words under any circumstances.
 {mode_rules}
 """
 
@@ -135,11 +137,13 @@ DELTA_RULES = (
 
 def build_messages(data: BriefingData, cfg: Config) -> list[dict[str, str]]:
     full = data.mode == "full"
-    words = int(cfg.briefing.target_minutes * WORDS_PER_MINUTE) if full else 90
+    words = int(cfg.briefing.target_minutes * WORDS_PER_MINUTE) if full else 60
     rules = FULL_RULES if full else DELTA_RULES.format(
         since=data.since.strftime("%H:%M") if data.since else "earlier", name=cfg.user.name
     )
-    system = SYSTEM.format(name=cfg.user.name, words=words, max_words=int(words * 1.3), mode_rules=rules)
+    system = SYSTEM.format(
+        name=cfg.user.name, words=words, max_words=int(cfg.briefing.max_minutes * WORDS_PER_MINUTE) if full else 90,
+        urgent_words=int(cfg.briefing.urgent_max_minutes * WORDS_PER_MINUTE) if full else 90, mode_rules=rules)
     user = f"Current time: {data.generated_at.strftime('%A %d %B %Y, %H:%M')}.\n"
     if full:
         user += f"Greeting to use: {greeting(cfg, data.generated_at)}\n"
@@ -179,7 +183,7 @@ async def compose_stream(llm: LLM | None, cfg: Config, data: BriefingData) -> As
         return
     started = False
     try:
-        words = int(cfg.briefing.target_minutes * WORDS_PER_MINUTE) if data.mode == "full" else 90
+        words = int(cfg.briefing.urgent_max_minutes * WORDS_PER_MINUTE) if data.mode == "full" else 90
         async for ev in llm.stream_chat(
             build_messages(data, cfg), None, role="chat", temperature=0.5, max_tokens=int(words * 2.2)
         ):
