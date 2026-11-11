@@ -417,6 +417,22 @@ def apply_fixes(cfg: Config, say: Callable[[str], None] = print) -> None:
 # ----------------------------------------------------------------------------------------- driver
 
 
+def check_local_model(cfg: Config) -> Check | None:
+    """The offline fallback: Ollama running here with the configured model pulled."""
+    if not cfg.llm.local_fallback:
+        return None
+    import httpx
+
+    try:
+        names = [m.get("name", "") for m in httpx.get(cfg.llm.local_host.rstrip("/") + "/api/tags", timeout=2).json().get("models", [])]
+    except Exception:  # noqa: BLE001
+        return Check("offline model", WARN, f"Ollama isn't running at {cfg.llm.local_host}, so Jarvis has no answers when offline",
+                     "start Ollama (ollama.com), then: ollama pull " + cfg.llm.local_model)
+    if any(n == cfg.llm.local_model or n.split(":")[0] == cfg.llm.local_model for n in names):
+        return Check("offline model", OK, f"{cfg.llm.local_model} ready in Ollama")
+    return Check("offline model", WARN, f"{cfg.llm.local_model} isn't pulled in Ollama", f"ollama pull {cfg.llm.local_model}")
+
+
 async def collect_checks(*, llm: Any | None = None, network: bool = True) -> list[Check]:
     checks: list[Check] = []
     cfg_check, cfg = check_config()
@@ -426,6 +442,9 @@ async def collect_checks(*, llm: Any | None = None, network: bool = True) -> lis
     checks.append(check_nim_key())
     if network:
         checks.extend(await check_nim(cfg, llm))
+    local = check_local_model(cfg)
+    if local:
+        checks.append(local)
     checks.extend(check_voice_stack(cfg))
     checks.extend(check_brew_tools())
     access = load_access_report()  # prefer what the running daemon itself can read over what this terminal can read

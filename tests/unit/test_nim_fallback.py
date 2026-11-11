@@ -63,7 +63,7 @@ async def test_no_fallback_after_output_started(monkeypatch):
 
     async def breaks(model, messages, tools, temperature, max_tokens):
         tried.append(model)
-        yield TextDelta("partial")
+        yield TextDelta("A half-spoken answer that is already on screen")
         raise LLMUnavailable("connection dropped")
 
     monkeypatch.setattr(llm, "_stream_model", breaks)
@@ -107,3 +107,18 @@ async def test_models_rejecting_extra_body_are_retried_plain(monkeypatch):
     [e async for e in llm._stream_model("m/x", [], None, None, None)]
     assert seen == [{}]  # remembered: no more rejected requests
     assert cfg.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+async def test_noise_reply_falls_through_to_next_model(monkeypatch):
+    noise = "( magma asynchronous alignment ( ( ( The indeed"
+    llm, tried = make(monkeypatch, {"a/primary": [TextDelta(noise)], "b/second": [TextDelta("Going well, sir.")]})
+    text = "".join([e.text async for e in llm.stream_chat([{"role": "user", "content": "hi"}]) if isinstance(e, TextDelta)])
+    assert text == "Going well, sir." and tried == ["a/primary", "b/second"]
+
+
+def test_structured_replies_are_not_mistaken_for_noise():
+    from jarvis_core.adapters.services import _looks_like_noise
+
+    for ok in ('{"replace": "7483cb72d0c3"}', '[{"kind": "fact", "text": "I like tea", "confidence": 0.9}]',
+               '```json\n{"a": 1}\n```', "Going well, sir. 2 meetings at 3:30, 5:00."):
+        assert not _looks_like_noise(ok), ok

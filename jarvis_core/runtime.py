@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -76,6 +77,15 @@ async def build_runtime(cfg: Config, *, standalone: bool, ipc_file: str | None) 
         if n:
             log.info("restored %d timer(s) from the last run", n)
         assistant.ctx.announce = daemon.announce_reliably  # timers and reminders must always get through
+        if cfg.llm.announce_switches and hasattr(llm, "set_notify"):
+            _pending: set[asyncio.Task] = set()
+
+            def _say_switch(text: str) -> None:
+                t = asyncio.get_running_loop().create_task(daemon.announce_reliably(text, earcon=None, ttl_s=120.0, remember=False, follow_up=False))
+                _pending.add(t)
+                t.add_done_callback(_pending.discard)
+
+            llm.set_notify(_say_switch)
         assistant.ctx.narrate = daemon.narrate
     if hasattr(frontend, "on_shell_lost"):
         frontend.on_shell_lost = daemon.request_stop  # type: ignore[attr-defined]

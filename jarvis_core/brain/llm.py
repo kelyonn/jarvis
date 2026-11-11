@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 
 from jarvis_core.config import Config
@@ -24,10 +25,133 @@ log = logging.getLogger(__name__)
 
 def build_llm(cfg: Config) -> LLM:
     from jarvis_core import secrets
-    from jarvis_core.adapters.services import NIMLLM
+    from jarvis_core.adapters.services import NIMLLM, OllamaLLM
 
     key = secrets.get_secret("NIM_API_KEY")
-    return RetryingLLM(NIMLLM(cfg.llm, key))
+    nim = NIMLLM(cfg.llm, key)
+    online = RetryingLLM(nim)
+    if not cfg.llm.local_fallback:
+        return online
+    return FailoverLLM(online, OllamaLLM(cfg.llm), nim=nim, primary_host=cfg.llm.host, local_model=cfg.llm.local_model)
+
+
+async def _reachable(host: str, timeout: float = 1.5) -> bool:
+    """Can we open a connection to the online model's host at all? (No internet fails here in a moment, not after a timeout.)"""
+    from urllib.parse import urlparse
+
+    u = urlparse(host)
+    port = u.port or (443 if u.scheme == "https" else 80)
+    try:
+        _, w = await asyncio.wait_for(asyncio.open_connection(u.hostname, port), timeout)
+        w.close()
+        return True
+    except Exception:  # noqa: BLE001 - any failure means "not reachable"
+        return False
+
+
+class FailoverLLM:
+    """Online models first; when they can't be reached, a model on this Mac (Ollama), and back again when they return.
+
+    Moves only before any output has been produced (a half-spoken answer is never restarted on another model), says so
+    out loud on every switch through ``notify``, and while local re-checks the internet at most every ``recheck_s``.
+    """
+
+    def __init__(self, primary: LLM, local: LLM, *, nim: object | None = None, primary_host: str = "",
+                 local_model: str = "local", recheck_s: float = 45.0, reachable=None) -> None:
+        self.primary = primary
+        self.local = local
+        self.local_model = local_model
+        self.mode = "online"  # online | local
+        self.recheck_s = recheck_s
+        self._retry_at = 0.0
+        self._nim = nim
+        self._host = primary_host
+        self._reachable = reachable or (lambda: _reachable(self._host))
+        self.notify = None
+
+    def set_notify(self, fn) -> None:
+        """``fn(text)`` is called with a sentence to say whenever the model in use changes."""
+        self.notify = fn
+        if self._nim is not None:
+            self._nim.notify = fn
+
+    def _tell(self, text: str) -> None:
+        log.warning("model: %s", text)
+        if self.notify is not None:
+            try:
+                self.notify(text)
+            except Exception:  # pragma: no cover
+                log.debug("notice failed", exc_info=True)
+
+    async def stream_chat(
+        self,
+        messages: list[ChatMsg],
+        tools: list[ToolSchema] | None = None,
+        *,
+        role: LLMRole = "chat",
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[LLMEvent]:
+        kw = {"role": role, "temperature": temperature, "max_tokens": max_tokens}
+        if self.mode == "local":
+            if time.monotonic() < self._retry_at or not await self._reachable():
+                self._retry_at = time.monotonic() + self.recheck_s
+                async for ev in self.local.stream_chat(messages, tools, **kw):
+                    yield ev
+                return
+        emitted = False
+        try:
+            async for ev in self.primary.stream_chat(messages, tools, **kw):
+                emitted = True
+                yield ev
+            if self.mode == "local":
+                self.mode = "online"
+                self._tell("Back online. I'm using the main model again.")
+            return
+        except LLMAuthError:
+            raise
+        except LLMUnavailable as e:
+            if emitted:
+                raise
+            online = await self._reachable()
+            if self.mode == "online":
+                self.mode = "local"
+                self._retry_at = time.monotonic() + self.recheck_s
+                self._tell(
+                    "The online models aren't responding, so I'm switching to my local model. I may be a little slower and less sharp."
+                    if online else
+                    "You seem to be offline, so I'm switching to my local model. I may be a little slower and less sharp until you're back."
+                )
+            try:
+                async for ev in self.local.stream_chat(messages, tools, **kw):
+                    yield ev
+            except LLMUnavailable:
+                log.warning("local model unavailable too (is Ollama running with %s?)", self.local_model)
+                raise e from None
+
+    async def complete(
+        self,
+        messages: list[ChatMsg],
+        *,
+        role: LLMRole = "chat",
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
+        parts: list[str] = []
+        async for ev in self.stream_chat(messages, None, role=role, temperature=temperature, max_tokens=max_tokens):
+            if isinstance(ev, TextDelta):
+                parts.append(ev.text)
+        return "".join(parts).strip()
+
+    def list_models(self) -> list[str]:
+        return self.primary.list_models()
+
+    def health(self) -> bool:
+        return self.primary.health()
+
+    @property
+    def probe(self):
+        return self.primary.probe
 
 
 class RetryingLLM:

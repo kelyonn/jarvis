@@ -11,8 +11,9 @@ import asyncio
 import io
 import json
 import logging
+import time
 import wave
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -88,6 +89,25 @@ def _map_http_error(exc: Exception) -> Exception:
     return LLMUnavailable(str(exc))
 
 
+_HEAD_CHARS = 40
+
+
+def _looks_like_noise(text: str) -> bool:
+    """Is this the start of a degenerate model reply (replacement characters, stray scripts, symbol soup)?"""
+    t = text.strip()
+    if not t:
+        return False
+    if "\ufffd" in t or t.count("(") >= 3:
+        return True
+    foreign = sum(1 for c in t if c.isalpha() and ord(c) > 0x24F)  # beyond Latin letters
+    if foreign / len(t) > 0.08:
+        return True
+    if t[0] in "{[`<":  # JSON, code or markup: symbols are expected there
+        return False
+    return len(t) >= 20 and sum(c.isalnum() or c.isspace() for c in t) / len(t) < 0.6
+
+
+
 class NIMLLM:
     """:class:`jarvis_core.interfaces.LLM` for NVIDIA NIM's OpenAI-compatible streaming API."""
 
@@ -95,7 +115,20 @@ class NIMLLM:
         self.cfg = cfg
         self.api_key = api_key
         self._working: dict[str, str] = {}  # role -> model that last answered
+        self.notify: Callable[[str], None] | None = None  # told (in words) when this client moves to a backup model or back
+        self._last_notice: tuple[str, float] = ("", 0.0)
         self._plain: set[str] = set()  # models that rejected extra_body
+
+    def _tell(self, text: str) -> None:
+        """Say a switch out loud, once: the fast and chat roles often change together, so repeats within a minute are dropped."""
+        now = time.monotonic()
+        if self.notify is None or (self._last_notice[0] == text and now - self._last_notice[1] < 60):
+            return
+        self._last_notice = (text, now)
+        try:
+            self.notify(text)
+        except Exception:  # pragma: no cover - a notice must never break a reply
+            log.debug("switch notice failed", exc_info=True)
 
     # -- setup --------------------------------------------------------------
 
@@ -135,17 +168,48 @@ class NIMLLM:
         Fallback only happens before any output has been produced.
         """
         self._require_key()
+        if self.cfg.redact_secrets:
+            from jarvis_core.policy.redact import redact_messages
+
+            messages, masked = redact_messages(messages)
+            if masked:
+                log.info("masked %d secret(s) before sending to the model", masked)
         last: Exception | None = None
         for model in self.candidates(role):
             emitted = False
             try:
+                head = ""  # hold back the first few words so a model that is emitting noise is never shown or spoken
                 async for ev in self._stream_model(model, messages, tools, temperature, max_tokens):
-                    emitted = True
+                    if not emitted and isinstance(ev, TextDelta):
+                        head += ev.text
+                        if len(head) < _HEAD_CHARS:
+                            continue
+                        if _looks_like_noise(head):
+                            raise LLMUnavailable(f"{model} returned noise")
+                        emitted = True
+                        yield TextDelta(head)
+                        continue
+                    if not emitted:
+                        if head:
+                            if _looks_like_noise(head):
+                                raise LLMUnavailable(f"{model} returned noise")
+                            yield TextDelta(head)
+                            head = ""
+                        emitted = True
                     yield ev
+                if not emitted and head:
+                    if _looks_like_noise(head):
+                        raise LLMUnavailable(f"{model} returned noise")
+                    yield TextDelta(head)
                 if self._working.get(role) != model:
-                    if self._working.get(role) is not None or model != self._model(role):
+                    before = self._working.get(role)
+                    if before is not None or model != self._model(role):
                         log.warning("NIM %s model is now %s", role, model)
                     self._working[role] = model
+                    if model != self._model(role):
+                        self._tell("The main model isn't responding, so I've switched to a backup.")
+                    elif before is not None:
+                        self._tell("The main model is back.")
                 return
             except (LLMAuthError, LLMRateLimited):
                 raise
@@ -311,6 +375,22 @@ def _pcm16_to_wav(pcm16: bytes, sample_rate: int) -> bytes:
     return buf.getvalue()
 
 
+class OllamaLLM(NIMLLM):
+    """A model running on this Mac through Ollama, which speaks the same OpenAI-style streaming API as NIM.
+
+    Used when the internet or every online model is down. Thinking is switched off (``reasoning_effort: none``): left on,
+    a small model spends ten-plus seconds muttering to itself before it says anything."""
+
+    def __init__(self, cfg: LLMCfg) -> None:
+        local = cfg.model_copy(update={
+            "host": cfg.local_host, "chat_model": cfg.local_model, "fast_model": cfg.local_model, "vision_model": cfg.local_model,
+            "fallback_models": [], "extra_body": {"reasoning_effort": "none"}, "request_timeout_s": cfg.local_timeout_s,
+            "redact_secrets": False,  # nothing leaves this Mac
+        })
+        super().__init__(local, "ollama")
+
+
+
 class FasterWhisperSTT:
     """Speech-to-text fallback on ``faster-whisper`` (CPU), used when mlx-whisper is unavailable."""
 
@@ -360,10 +440,11 @@ def web_search(query: str, max_results: int = 5) -> str:
 
 def fetch_url(url: str, max_chars: int = 6000) -> str:
     try:
-        r = httpx.get(url, timeout=15, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"})
         import re
 
-        text = re.sub(r"<(script|style)[\s\S]*?</\1>", " ", r.text)
+        from jarvis_core.policy.netguard import fetch_public
+
+        text = re.sub(r"<(script|style)[\s\S]*?</\1>", " ", fetch_public(url))
         text = re.sub(r"<[^>]+>", " ", text)
         return re.sub(r"\s+", " ", text)[:max_chars]
     except Exception as e:
