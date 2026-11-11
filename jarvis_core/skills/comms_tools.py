@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from jarvis_core import cards
 from jarvis_core.comms.drafter import APP_LABEL, Draft
 from jarvis_core.comms.hub import Channel
 from jarvis_core.errors import SkillError
@@ -109,13 +110,55 @@ async def _read_messages(ctx: ToolContext, a: dict[str, Any]) -> str:
     if person:
         items = [i for i in items if person in i.sender.lower()]
         if items:
+            cards.post(ctx, cards.messages_card(items))
             return full_messages(items, int(a.get("limit") or 10))
+    if items:
+        cards.post(ctx, cards.messages_card(items))
     text = summarise_items(items)
     if problems and not items:
         text = "I couldn't read that, sir. " + problems[0]
     elif len(items) > 1:  # the plain summary is the fallback; the detail lets the reply say what people actually want
         text += DETAIL_MARK + full_messages(items, 25)
     return text
+
+
+async def _find_email(ctx: ToolContext, a: dict[str, Any]) -> Item:
+    """The email the user means: unread first, then a Gmail search by sender / subject words."""
+    hub = _svc(ctx, "comms")
+    gmail = hub.readers.get("gmail")
+    if gmail is None:
+        raise SkillError("Email isn't connected, sir.")
+    needle = " ".join(str(a.get("query") or "").split())
+    items = await gmail.unread(since=datetime.now().astimezone() - timedelta(days=14), max_items=25)
+    words = [w for w in needle.lower().split() if len(w) > 2]
+    hits = [i for i in items if all(w in f"{i.sender} {i.title} {i.body}".lower() for w in words)] if words else items
+    if not hits and needle:
+        hits = await gmail.search(needle, 5)
+    if not hits:
+        raise SkillError(f"I couldn't find an email matching {needle or 'that'}, sir.")
+    return max(hits, key=lambda i: i.timestamp or datetime.min.astimezone())
+
+
+async def _read_email(ctx: ToolContext, a: dict[str, Any]) -> str:
+    """The whole text of one email, not the inbox snippet (which stops after about 200 characters)."""
+    item = await _find_email(ctx, a)
+    gmail = _svc(ctx, "comms").readers["gmail"]
+    msgs = await gmail.thread(item.thread_id, 1) if item.thread_id else []
+    text = (msgs[-1]["text"] if msgs else item.body).strip()
+    text = "\n".join(line.rstrip() for line in text.splitlines())
+    if len(text) > 6000:
+        text = text[:6000] + "\n[cut here: the email is longer]"
+    cards.post(ctx, cards.email_card(item, text))
+    return f"Email from {item.sender}, {_when(item.timestamp)}. Subject: {item.title}.\n{text}"
+
+
+async def _open_email(ctx: ToolContext, a: dict[str, Any]) -> str:
+    """Show the email in the browser so the user can read it themselves."""
+    item = await _find_email(ctx, a)
+    res = await ctx.run(["open", f"https://mail.google.com/mail/u/0/#all/{item.thread_id or item.id}"])
+    if not res.ok:
+        raise SkillError("I couldn't open Gmail, sir.")
+    return f"Opened the email from {item.sender}: {item.title}."
 
 
 async def _search_messages(ctx: ToolContext, a: dict[str, Any]) -> str:
@@ -126,6 +169,7 @@ async def _search_messages(ctx: ToolContext, a: dict[str, Any]) -> str:
     hits = [i for i in items if needle in f"{i.sender} {i.title} {i.body}".lower()]
     if not hits:
         return f"Nothing in your recent messages mentions {a['query']}, sir."
+    cards.post(ctx, cards.messages_card(hits))
     return summarise_items(hits)
 
 
@@ -194,7 +238,9 @@ async def _draft_message(ctx: ToolContext, a: dict[str, Any]) -> str:
     ctx.state.pop("alert_offer", None)
     label = APP_LABEL.get(ch.app, ch.app)
     subj = f" Subject: {draft.subject}." if ch.app == "gmail" else ""
-    return f"Here's the draft for {ch.name}, sir.{subj} \"{draft.body}\" Shall I put it in {label}?"
+    cards.post(ctx, cards.draft_card(ch.name, label, draft.body, draft.subject if ch.app == "gmail" else ""))
+    heads_up = f"A word of caution first, sir: {draft.caution.rstrip('. ')}. " if draft.caution else ""
+    return f"{heads_up}Here's the draft for {ch.name}, sir.{subj} \"{draft.body}\" Shall I put it in {label}?"
 
 
 def _current(ctx: ToolContext) -> Draft:
@@ -215,7 +261,9 @@ async def _revise_draft(ctx: ToolContext, a: dict[str, Any]) -> str:
         await drafter.revise(d, a["instruction"], thread, samples)
     except ValueError as e:
         raise SkillError(str(e)) from None
-    return f"Revised, sir. \"{d.body}\" Shall I put it in {APP_LABEL.get(d.channel.app, d.channel.app)}?"
+    label = APP_LABEL.get(d.channel.app, d.channel.app)
+    cards.post(ctx, cards.draft_card(d.channel.name, label, d.body, d.subject if d.channel.app == "gmail" else ""))
+    return f"Revised, sir. \"{d.body}\" Shall I put it in {label}?"
 
 
 async def _open_chat(ctx: ToolContext, a: dict[str, Any]) -> str:
@@ -280,6 +328,19 @@ def register(reg: ToolRegistry) -> None:
         obj({"person": S("Contact or group name as spoken"), "app": E("Force an app", ["whatsapp", "imessage", "gmail"]),
              "limit": I("How many recent messages, default 12")}, required=["person"]),
         _read_conversation, category="messaging", untrusted_output=True, timeout_s=30))
+    reg.register(Tool(
+        "read_email",
+        "Get the COMPLETE text of one email (read_messages and search_messages only have a short snippet that cuts off). Use for "
+        "'read that email', 'what does it say', 'is there a GPA cut-off', any question the snippet could not answer. Pass the "
+        "sender or subject words as 'query'. Answer from the full text; never say the text was cut off if you have not called this.",
+        obj({"query": S("Sender and/or subject words, e.g. 'Boomi Software'")}, required=["query"]),
+        _read_email, category="messaging", untrusted_output=True, timeout_s=30))
+    reg.register(Tool(
+        "open_email",
+        "Open one email in the browser (Gmail) so the user can see it. Use for 'open the mail', 'show me the email'. Then say "
+        "only that it is open.",
+        obj({"query": S("Sender and/or subject words")}, required=["query"]),
+        _open_email, category="messaging", timeout_s=30, final=True))
     reg.register(Tool(
         "search_messages", "Search the user's recent messages and emails (last two weeks) for a word, name or topic.",
         obj({"query": S("Text to look for")}, required=["query"]),

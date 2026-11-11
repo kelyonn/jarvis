@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from jarvis_core import cards
 from jarvis_core.brain.compose import COMPOSE_TOOLS, compose_reply
 from jarvis_core.brain.history import ConversationHistory
 from jarvis_core.brain.modes import TurnPlan, deliberation_messages, plan_turn
@@ -21,6 +22,7 @@ from jarvis_core.brain.toolselect import STICKY_TURNS, fix_asr, match_categories
 from jarvis_core.config import Config
 from jarvis_core.errors import PermissionMissing, ShortcutMissing, SkillError
 from jarvis_core.interfaces import LLM, TextDelta, ToolCallEvent
+from jarvis_core.policy import gate
 from jarvis_core.skills.base import Tool, ToolContext, ToolRegistry, validate_args
 from jarvis_core.voice.turn import parse_confirmation
 
@@ -41,6 +43,17 @@ _NUDGE = (
     "say you did, are doing or will do something unless a tool has actually run. Only answer in words when no tool is needed."
 )
 
+_NUDGE_REPEAT = (
+    "You just repeated your previous answer word for word, but the user asked something new. Do not repeat it. Call the "
+    "tool that fits the request (for email: read_messages with source gmail, search_messages, or read_email) and answer "
+    "from what it returns."
+)
+
+
+def _norm_words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9']+", (text or "").lower())
+
+
 _CLAIM = re.compile(
     r"^\W*(?:(?:right|ok|okay|very good|certainly|of course|sure|alright|understood)\W+)*"
     r"(?:(?:i(?:'ll| will|'m| am)\s+)?(?:opening|launching|searching|checking|setting|creating|starting|turning|playing|looking|"
@@ -50,7 +63,8 @@ _CLAIM = re.compile(
     r"booking|scheduling|reminding|calling|texting|messaging|drafting|searching|downloading|uploading|connecting)\b"
     r"|on it\b|one moment\b|just a moment\b|let me\b|i'll\b|i will\b|"
     r"(?:note|reminder|timer|alarm|event|file|folder|message|draft) (?:created|set|saved|added|sent|started|deleted)\b|"
-    r"(?:opened|created|started|turned|saved|added|closed|sent|set)\b)",
+    r"(?:opened|created|started|turned|saved|added|closed|sent|set|done|changed|updated|fixed|replaced|edited|typed|pasted|"
+    r"corrected|swapped)\b)",
     re.I,
 )
 
@@ -58,7 +72,7 @@ _CLAIM = re.compile(
 _COMMAND_VERBS = frozenset(
     "set open close quit play pause resume turn remind make start stop text message send call search find take write save add "
     "remove delete move snap put launch switch mute unmute lock schedule book draft reply read connect disconnect show check "
-    "skip shuffle create".split()
+    "skip shuffle create change fix edit replace update correct paste type".split()
 )
 _LEAD_WORDS = frozenset("please can could would you jarvis jarvis hey hi okay ok just then now and also".split())
 _YES_DRAFT = re.compile(
@@ -174,7 +188,7 @@ class Agent:
             # A draft is waiting and the user said yes (or "send it"): put it in the app ourselves rather than trusting the
             # model to call insert_draft, which it sometimes only claims to have done.
             tool = self.registry.get("insert_draft")
-            if tool is not None:
+            if tool is not None and gate.check(tool, self.ctx, {}).action != "block":
                 self.history.add({"role": "user", "content": user_text})
                 self.tools_used = ["insert_draft"]
                 result = re.sub(r"</?untrusted[^>]*>\s*", "", await self._invoke(tool, {})).strip()
@@ -202,7 +216,7 @@ class Agent:
             args = validate_args(tool, call.args)
         except SkillError:
             return None
-        if tool.decide(self.ctx, args).action != "allow":
+        if gate.check(tool, self.ctx, args).action != "allow":
             return None
         self.tools_used = []
         result = await self._invoke(tool, args)
@@ -312,9 +326,21 @@ class Agent:
         self._recent_categories.append(used)
         del self._recent_categories[:-STICKY_TURNS]
 
+    def _repeats_last(self, text: str, prefix_words: int = 0) -> bool:
+        """Is ``text`` (or, with ``prefix_words``, its opening) the same as the previous reply? A weak model sometimes just says
+        its last answer again instead of dealing with the new question."""
+        last = next((m.get("content") for m in reversed(self.history.messages()) if m.get("role") == "assistant" and m.get("content")), "")
+        a, b = _norm_words(text), _norm_words(str(last))
+        if len(b) < 6 or not a:
+            return False
+        if prefix_words:
+            return len(a) >= prefix_words and a[:prefix_words] == b[:prefix_words]
+        return a == b or (len(a) >= 12 and a[:12] == b[:12])
+
     async def _loop(self, user_text: str = "") -> AsyncIterator[str]:
-        tools = self.registry.schemas(self._offered_categories(user_text))
+        tools = self.registry.schemas(self._offered_categories(user_text), gate.disabled_categories(self.cfg))
         nudged = False
+        repeated_once = False
         failed_rounds = 0
         filler_said = False
         call_counts: dict[str, int] = {}
@@ -328,7 +354,7 @@ class Agent:
         for _ in range(max(1, self.cfg.llm.max_tool_iterations)):
             messages = [{"role": "system", "content": self._system_prompt(user_text, plan, notes)}, *self.history.messages()]
             if nudged:
-                messages.append({"role": "system", "content": _NUDGE})
+                messages.append({"role": "system", "content": _NUDGE_REPEAT if repeated_once else _NUDGE})
             text_parts: list[str] = []
             calls: list[ToolCallEvent] = []
             # Speech must not start with "Opening X now" when no tool is actually called, so while the opening words
@@ -345,13 +371,21 @@ class Agent:
                         continue
                     held.append(ev.text)
                     head = "".join(held)
-                    if len(head.split()) >= 6 and not _claims_action(head) and not hold_all:
+                    if len(head.split()) >= 6 and not _claims_action(head) and not hold_all and not self._repeats_last(head, 6):
                         flushed = True
                         yield head
                 elif isinstance(ev, ToolCallEvent):
                     calls.append(ev)
             text = "".join(text_parts).strip()
             if not calls:
+                if bool(tools) and not self.tools_used and self._repeats_last(text):
+                    if not nudged:
+                        nudged = repeated_once = True  # say-it-again is never an answer: retry once, steering it to a tool
+                        continue
+                    text = "Sorry, I got stuck repeating myself. Could you ask that another way?"
+                    yield (" " if flushed else "") + text
+                    self.history.add({"role": "assistant", "content": text})
+                    return
                 claimed = not self.tools_used and bool(tools) and (_claims_action(text) or _answers_command_with_talk(user_text, text))
                 if claimed and not nudged:
                     nudged = True  # retry once, telling the model to act instead of describing
@@ -410,6 +444,18 @@ class Agent:
             if prompt:
                 self._note_categories()
                 yield prompt
+                return
+            # A tool whose result already is the reply ("Done. Cmd+Z undoes it.") needs no second model call to say it again.
+            tools_ran = [self.registry.get(c.name) for c in calls]
+            msgs = [m["content"] for m in self.history.messages()[-len(calls):] if m.get("role") == "tool"]
+            if (tools_ran and all(t is not None and t.final for t in tools_ran) and len(msgs) == len(calls)
+                    and not any(str(r).startswith(("Error:", "Blocked", "Cancelled")) for r in msgs)):
+                text = " ".join(str(r).strip() for r in msgs)
+                self.history.add({"role": "assistant", "content": text})
+                self._note_categories()
+                if base_plan is not None:
+                    self._last_kind = base_plan.kind
+                yield text
                 return
             # Tools that fail twice in a row will not start working on a third try: say why and stop.
             results = [m["content"] for m in self.history.messages()[-len(calls):] if m.get("role") == "tool"]
@@ -480,7 +526,7 @@ class Agent:
             except SkillError as e:
                 self._tool_msg(call, f"Error: {e}")
                 continue
-            decision = tool.decide(self.ctx, args)
+            decision = gate.check(tool, self.ctx, args)
             if decision.action == "block":
                 self.ctx.audit.write("blocked", tool=tool.name, args=args, reason=decision.reason)
                 self._tool_msg(call, f"Blocked by safety policy: {decision.reason}. Tell the user plainly.")
@@ -495,6 +541,12 @@ class Agent:
                 parked = [ToolCallEvent(call.id, call.name, args), *calls[i + 1:]]
                 self.pending = Pending(parked, decision.prompt, self._clock())
                 self.ctx.audit.write("confirm_requested", tool=tool.name, args=args, prompt=decision.prompt)
+                fe = self.ctx.frontend
+                if fe is not None:
+                    try:
+                        await fe.card(cards.clean(cards.confirm_card(decision.prompt or "Go ahead?")) or {})
+                    except Exception:  # pragma: no cover
+                        log.debug("confirm card failed", exc_info=True)
                 return decision.prompt
             result = await self._invoke(tool, args)
             self._tool_msg(call, result)
@@ -521,6 +573,11 @@ class Agent:
         self.history.add({"role": "tool", "tool_call_id": call.id, "content": content})
 
     async def _invoke(self, tool: Tool, args: dict[str, Any]) -> str:
+        # Last line of defence: whatever path got here, a blocked tool never runs.
+        blocked = gate.check(tool, self.ctx, args)
+        if blocked.action == "block":
+            self.ctx.audit.write("blocked", tool=tool.name, args=args, reason=blocked.reason)
+            return f"Error: {blocked.reason}."
         t0 = time.monotonic()
         ok = True
         try:
@@ -557,6 +614,21 @@ class Agent:
         self.ctx.audit.write(
             "tool", tool=tool.name, args=args, ok=ok, ms=int((time.monotonic() - t0) * 1000), result=out[:200]
         )
+        await self._show_card(tool, args, out, ok)
         if tool.untrusted_output and ok:
             out = wrap_untrusted(out, source=tool.name)
         return out
+
+    async def _show_card(self, tool: Tool, args: dict[str, Any], out: str, ok: bool) -> None:
+        """Send the tool's rich card (if it made one, or one can be built from its result) to the window. Never fails a turn."""
+        try:
+            card = self.ctx.state.pop("card", None)
+            if card is None and ok:
+                card = cards.clean(cards.auto_card(tool.name, args, out, self.ctx))
+            elif card is None and out.startswith("Error:") and tool.category not in ("memory",):
+                card = cards.clean(cards.error_card(out[len("Error:"):].strip().rstrip(".")))
+            fe = self.ctx.frontend
+            if card is not None and fe is not None:
+                await fe.card(card)
+        except Exception:  # pragma: no cover - a card is a nicety, the spoken reply is the answer
+            log.debug("card failed", exc_info=True)

@@ -38,6 +38,7 @@ class Frontend:
 
     def __init__(self) -> None:
         self.events: FrontendEvents | None = None
+        self.options: dict[str, Any] = {}  # settings a window-side frontend needs (sent again on every reconnect)
         self._waiters: dict[str, asyncio.Future[str]] = {}
 
     # -- lifecycle ----------------------------------------------------------
@@ -54,6 +55,9 @@ class Frontend:
 
     async def rich(self, text: str) -> None:
         """Formatted (markdown) version of the reply for the chat card: code, working, tables, steps."""
+
+    async def card(self, card: dict[str, Any]) -> None:
+        """A structured card for the reply being given (see jarvis_core.cards). Frontends without a window ignore it."""
 
     async def hide_ui(self) -> None:
         """Close the conversation card and clear its history (the orb comes back with the next activity)."""
@@ -121,6 +125,7 @@ class FakeFrontend(Frontend):
         self.states: list[str] = []
         self.captions: list[str] = []
         self.rich_blocks: list[str] = []
+        self.cards: list[dict[str, Any]] = []
         self.played: dict[str, bytearray] = {}
         self.earcons: list[str] = []
         self.notifications: list[tuple[str, str]] = []
@@ -146,6 +151,10 @@ class FakeFrontend(Frontend):
 
     async def rich(self, text):
         self.rich_blocks.append(text)
+
+    async def card(self, card):
+        if card:
+            self.cards.append(card)
 
     async def notify(self, title, body):
         self.notifications.append((title, body))

@@ -33,6 +33,8 @@ LOCATION = "location"
 ORB_CLICK = "orb_click"
 TEXT_INPUT = "text_input"  # something you typed into the orb panel instead of saying
 COMMAND = "command"
+CARD_ACTION = "card_action"  # a button on a rich card was clicked: {"kind": "say", "value": "..."}
+MEMORY_REQUEST = "memory_request"  # the Memory window asks: {"op": "memory.list|forget|edit|clear", ...args}
 PING = "ping"
 PONG = "pong"
 
@@ -47,6 +49,8 @@ EARCON = "earcon"
 ORB_QUEUE = "orb_queue"
 HIDE_UI = "hide_ui"
 RICH = "rich"
+OPTIONS = "options"  # settings the Shell needs to know: {"space_to_interrupt": bool}
+CARD = "card"  # a structured rich card for the reply (see jarvis_core.cards)
 AX_REQUEST = "ax_request"
 INPUT_REQUEST = "input_request"
 SCREENSHOT_REQUEST = "screenshot_request"
@@ -54,6 +58,7 @@ LOCATION_REQUEST = "location_request"
 PERMISSION_PROMPT = "permission_prompt"
 NOTIFY = "notify"
 MIC = "mic"
+MEMORY_RESULT = "memory_result"  # the answer to a memory_request, with the same id
 MIC_OPEN = "mic_open"  # open/close the capture device itself (the OS mic indicator follows this)
 
 REQUEST_TYPES = {

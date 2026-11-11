@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 from urllib.parse import quote_plus
 
+from jarvis_core import cards
 from jarvis_core.errors import SkillError
 from jarvis_core.skills.apps import check_url, resolve_app, running_apps
 from jarvis_core.skills.base import S, Tool, ToolContext, ToolRegistry, obj
@@ -162,7 +164,20 @@ async def _web_search(ctx: ToolContext, a: dict[str, Any]) -> str:
     from jarvis_core.adapters.services import web_search
 
     q = a["query"]
-    return await asyncio.get_running_loop().run_in_executor(None, web_search, q, 5)
+    text = await asyncio.get_running_loop().run_in_executor(None, web_search, q, 5)
+    rows = []
+    for ln in text.splitlines():
+        m = re.match(r"(.*?): (.*) \((https?://[^)\s]+)\)\s*$", ln)
+        if m:
+            rows.append((m.group(1), m.group(3)))
+    if rows:
+        from urllib.parse import urlparse
+
+        cards.post(ctx, {"kind": "list", "icon": "magnifyingglass", "kicker": f"Sources · {q}",
+                         "items": [{"title": t, "subtitle": urlparse(u).netloc.removeprefix("www."), "initial": str(i + 1)}
+                                   for i, (t, u) in enumerate(rows)],
+                         "actions": [cards.link("Open top result", rows[0][1], True)]})
+    return text
 
 
 async def _web_fetch(ctx: ToolContext, a: dict[str, Any]) -> str:

@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import date, datetime
 from typing import Any
 
+from jarvis_core import cards
 from jarvis_core.briefing import composer
 from jarvis_core.briefing.collectors import calendar as cal_c
 from jarvis_core.briefing.collectors import comms as comms_c
@@ -33,6 +34,7 @@ def _hash(s: str) -> str:
 
 class BriefingService:
     def __init__(self, cfg: Config, env: Env, llm: LLM | None) -> None:
+        self.last_card: dict[str, Any] | None = None  # the card for the latest weather/markets/news/calendar answer
         self.cfg = cfg
         self.env = env
         self.llm = llm
@@ -225,6 +227,7 @@ class BriefingService:
 
     async def weather_text(self, city: str | None = None, tomorrow: bool = False) -> str:
         w = await wx_c.collect(self.env, city)
+        self.last_card = cards.weather_card(w)
         if tomorrow and w.tomorrow_high_c is not None:
             s = (f"Tomorrow in {w.city}: {w.tomorrow_condition}, a high of {w.tomorrow_high_c:.0f} and a low of "
                  f"{w.tomorrow_low_c:.0f}")
@@ -232,11 +235,17 @@ class BriefingService:
         return wx_c.describe(w)
 
     async def markets_text(self, symbols: list[str] | None = None) -> str:
-        return mk_c.describe(await mk_c.collect(self.env, symbols))
+        quotes = await mk_c.collect(self.env, symbols)
+        self.last_card = cards.markets_card(quotes)
+        return mk_c.describe(quotes)
 
     async def news_text(self, topic: str = "world") -> str:
         items = await news_c.collect(self.env, topic)
+        if items:
+            self.last_card = cards.news_card(items, topic)
         return news_c.describe(items) if items else "Nothing notable, sir."
 
     async def calendar_text(self, day_offset: int = 0) -> str:
-        return cal_c.describe(await cal_c.collect(self.env, day_offset))
+        events = await cal_c.collect(self.env, day_offset)
+        self.last_card = cards.calendar_card(events, "Tomorrow" if day_offset else "Today")
+        return cal_c.describe(events)

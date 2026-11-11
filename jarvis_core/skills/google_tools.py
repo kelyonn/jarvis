@@ -6,6 +6,7 @@ import asyncio
 from datetime import datetime, time, timedelta
 from typing import Any
 
+from jarvis_core import cards
 from jarvis_core.adapters.workspace import CAL_SCOPE, Workspace, WorkspaceError, events_all
 from jarvis_core.errors import SkillError
 from jarvis_core.skills.base import Risk, S, Tool, ToolContext, ToolRegistry, obj
@@ -43,10 +44,15 @@ async def _agenda(ctx: ToolContext, a: dict[str, Any]) -> str:
     if not ws.session.connected() or not ws.has(CAL_SCOPE):  # not on Google yet: fall back to the Mac's Calendar app
         briefing = ctx.services.get("briefing")
         if briefing is not None:
-            return await briefing.calendar_text(1 if label == "tomorrow" else 0)
+            text = await briefing.calendar_text(1 if label == "tomorrow" else 0)
+            card, briefing.last_card = briefing.last_card, None
+            if card is not None:
+                cards.post(ctx, card)
+            return text
     events = await _run(events_all if ctx.services.get("workspace") is None else ws.events, start, end)
     if not events:
         return f"Nothing on your calendar {label}."
+    cards.post(ctx, cards.calendar_card(events, label.capitalize()))
     return f"Your calendar {label}:\n" + "\n".join(e.line() for e in events)
 
 

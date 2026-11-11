@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from jarvis_core import cards
 from jarvis_core.errors import SkillError
 from jarvis_core.skills.base import E, I, S, Tool, ToolContext, ToolRegistry, obj
 
@@ -20,21 +21,29 @@ async def _brief_me(ctx: ToolContext, a: dict[str, Any]) -> str:
     return await _svc(ctx).text(mode)
 
 
+async def _with_card(ctx: ToolContext, text: str) -> str:
+    svc = _svc(ctx)
+    card, svc.last_card = svc.last_card, None
+    if card is not None:
+        cards.post(ctx, card)
+    return text
+
+
 async def _weather(ctx: ToolContext, a: dict[str, Any]) -> str:
-    return await _svc(ctx).weather_text(a.get("city"), tomorrow=a.get("day") == "tomorrow")
+    return await _with_card(ctx, await _svc(ctx).weather_text(a.get("city"), tomorrow=a.get("day") == "tomorrow"))
 
 
 async def _markets(ctx: ToolContext, a: dict[str, Any]) -> str:
     syms = [s.strip() for s in (a.get("symbols") or "").split(",") if s.strip()] or None
-    return await _svc(ctx).markets_text(syms)
+    return await _with_card(ctx, await _svc(ctx).markets_text(syms))
 
 
 async def _news(ctx: ToolContext, a: dict[str, Any]) -> str:
-    return await _svc(ctx).news_text(a.get("topic") or "world")
+    return await _with_card(ctx, await _svc(ctx).news_text(a.get("topic") or "world"))
 
 
 async def _calendar(ctx: ToolContext, a: dict[str, Any]) -> str:
-    return await _svc(ctx).calendar_text(1 if a.get("day") == "tomorrow" else 0)
+    return await _with_card(ctx, await _svc(ctx).calendar_text(1 if a.get("day") == "tomorrow" else 0))
 
 
 def register(reg: ToolRegistry) -> None:

@@ -16,6 +16,12 @@ from jarvis_core.ipc.server import IPCServer
 log = logging.getLogger(__name__)
 
 
+def _open_memory():
+    from jarvis_core.memory.store import SQLiteMemory
+
+    return SQLiteMemory()
+
+
 class IPCFrontend(Frontend):
     # The Shell captures with a plain input (no voice-processing I/O): that unit ducks and degrades every other
     # app's audio system-wide, so voice barge-in is off and the mic is closed while Jarvis talks.
@@ -47,6 +53,7 @@ class IPCFrontend(Frontend):
         self.permissions: dict[str, Any] = {}
         self.last_location: dict[str, Any] | None = None
         self.on_shell_lost = on_shell_lost
+        self.memory_factory: Callable[[], Any] = _open_memory  # replaced in tests
         self._lost_timeout = shell_lost_timeout_s
         self._lost_task: asyncio.Task | None = None
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -122,6 +129,8 @@ class IPCFrontend(Frontend):
             await self.orb_queue(self._last_queue)
         await self.set_mic_enabled(self._mic_enabled)
         await self.set_capture(self._capture_open)
+        if self.options:
+            await self._send(P.OPTIONS, dict(self.options))
 
     async def _on_control(self, c: P.Control) -> None:
         d = c.data
@@ -147,10 +156,34 @@ class IPCFrontend(Frontend):
             self.last_location = d
         elif t == P.TEXT_INPUT and ev:
             ev.on_text_input(str(d.get("text") or ""))
+        elif t == P.CARD_ACTION and ev:
+            # A card button is the same as saying its line: it goes through the agent and the safety gate like any request.
+            if d.get("kind") == "say":
+                ev.on_text_input(str(d.get("value") or ""))
+        elif t == P.MEMORY_REQUEST:
+            await self._memory_request(c)
         elif t in (P.ORB_CLICK, P.COMMAND) and ev:
             ev.on_orb_click(str(d.get("action") or d.get("name") or ""))
         else:
             log.debug("ignored control message %s", t)
+
+    async def _memory_request(self, c: P.Control) -> None:
+        """The Shell's Memory window: answer on the same id. Runs off the event loop so a slow disk never stalls audio."""
+        from jarvis_core.memory import viewer_api
+
+        def work() -> dict[str, Any]:
+            mem = self.memory_factory()
+            try:
+                return viewer_api.handle(mem, str(c.data.get("op") or ""), c.data)
+            finally:
+                mem.close()
+
+        try:
+            result = await asyncio.to_thread(work)
+        except Exception as e:  # noqa: BLE001
+            log.warning("memory request failed: %s", e)
+            result = {"ok": False, "error": "I couldn't open my memory."}
+        await self.server.send_control(P.Control(P.MEMORY_RESULT, result, c.id))
 
     # -- outbound UI --------------------------------------------------------
 
@@ -166,6 +199,10 @@ class IPCFrontend(Frontend):
 
     async def rich(self, text: str) -> None:
         await self._send(P.RICH, {"text": text})
+
+    async def card(self, card: dict[str, Any]) -> None:
+        if card:
+            await self._send(P.CARD, {"card": card})
 
     async def hide_ui(self) -> None:
         await self._send(P.HIDE_UI)
