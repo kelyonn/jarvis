@@ -31,6 +31,20 @@ async def _watch_config(cfg: Config) -> None:
             log.error("config reload rejected: %s", e)
 
 
+async def _watch_parent(stop, interval: float = 2.0) -> None:
+    """Jarvis.app starts the daemon. If the app dies without stopping it (killed, crashed), the daemon is re-parented to
+    launchd: it must exit then, or it holds the single-instance lock and the next Jarvis.app can never start its own."""
+    parent = os.getppid()
+    if parent <= 1:
+        return
+    while True:
+        await asyncio.sleep(interval)
+        if os.getppid() != parent:
+            log.warning("Jarvis.app (pid %d) is gone; shutting down", parent)
+            stop()
+            return
+
+
 async def _main(cfg: Config, standalone: bool, ipc_file: str | None) -> int:
     from jarvis_core.runtime import build_runtime
 
@@ -48,13 +62,22 @@ async def _main(cfg: Config, standalone: bool, ipc_file: str | None) -> int:
     from jarvis_core.voice.enroll import watch_requests
 
     voice_id = asyncio.create_task(watch_requests(rt.daemon))
+    orphan = asyncio.create_task(_watch_parent(rt.daemon.request_stop)) if ipc_file else None
+    from jarvis_core.mcp_client import MCPManager
+
+    mcp_servers = MCPManager()
+    if rt.assistant.registry is not None:
+        await mcp_servers.start(rt.assistant.registry)
     try:
         await rt.run()
     finally:
+        await mcp_servers.stop()
         watcher.cancel()
         prober.cancel()
         devhook.cancel()
         voice_id.cancel()
+        if orphan is not None:
+            orphan.cancel()
     return 0
 
 

@@ -169,6 +169,7 @@ class Tool:
     category: str = ""
     timeout_s: float = 30.0
     untrusted_output: bool = False  # output contains outside text; the agent wraps it
+    final: bool = False  # on success the result is the whole spoken reply: skip the second model call that would paraphrase it
 
     def schema(self) -> ToolSchema:
         return {
@@ -176,13 +177,25 @@ class Tool:
             "function": {"name": self.name, "description": self.description, "parameters": self.parameters},
         }
 
+    def _default_confirm(self, args: dict[str, Any]) -> str:
+        """Spoken question for a risky tool with no prompt of its own: say what will be done, with the key details."""
+        details = []
+        for v in args.values():
+            if isinstance(v, (str, int, float)) and not isinstance(v, bool) and str(v).strip():
+                s = " ".join(str(v).split())
+                details.append(s if len(s) <= 40 else s[:37].rstrip() + "...")
+            if len(details) == 2:
+                break
+        what = self.name.replace("_", " ")
+        return f"Shall I go ahead with {what}, {' and '.join(details)}?" if details else f"Shall I go ahead with {what}?"
+
     def decide(self, ctx: ToolContext, args: dict[str, Any]) -> Decision:
         if self.classify:
             return self.classify(ctx, args)
         if self.risk == Risk.BLOCKED:
             return Decision.block(f"{self.name} is disabled")
         if self.risk == Risk.CONFIRM:
-            prompt = self.confirm_prompt(args) if self.confirm_prompt else f"Shall I go ahead with {self.name.replace('_', ' ')}?"
+            prompt = self.confirm_prompt(args) if self.confirm_prompt else self._default_confirm(args)
             return Decision.confirm(prompt)
         return Decision.allow()
 
@@ -206,8 +219,13 @@ class ToolRegistry:
     def tools(self) -> list[Tool]:
         return list(self._tools.values())
 
-    def schemas(self, categories: set[str] | None = None) -> list[ToolSchema]:
-        return [t.schema() for t in self._tools.values() if categories is None or t.category in categories]
+    def schemas(self, categories: set[str] | None = None, exclude: set[str] | None = None) -> list[ToolSchema]:
+        """Tool schemas to offer the model. ``exclude`` hides whole categories (capabilities the user switched off)."""
+        return [
+            t.schema()
+            for t in self._tools.values()
+            if (categories is None or t.category in categories) and not (exclude and t.category in exclude)
+        ]
 
     def __contains__(self, name: str) -> bool:
         return name in self._tools

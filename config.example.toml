@@ -8,17 +8,24 @@ day_end_hour = 3
 quiet_hours = ["03:00", "09:00"] # no spoken alerts (queued instead)
 
 [activation]
+space_to_interrupt = true       # while Jarvis talks it does not listen to your voice; hold Space to interrupt, speak, let go to send (set false for the old voice interruption)
 # "wake_word": say "Hey Jarvis" any time, even mid-reply (mic stays open). "hotkey": mic closed until you press the hotkey.
 listen_mode = "wake_word"
 wake_interrupt = true   # "Hey Jarvis" interrupts it while it is speaking
 wake_word = "hey_jarvis"
 wake_threshold = 0.6
 hotkey = "option+space"
+dictation = true                  # hold Ctrl+Option+Space, speak, let go: the words are typed into the front app
+extend_unfinished = true          # stopped after "open the ..."? wait a moment for the rest
+extend_wait_s = 1.6
+aec = false                       # software echo cancellation (talk over Jarvis on speakers). Check the log line
+aec_min_erle_db = 12.0            # "aec: removing N dB of echo" on your own Mac before turning this on
 follow_up_seconds = 8
 conversation_follow_up_seconds = 14   # between replies once you are properly talking
 barge_in = true
 
 [voice]
+low_confidence_logprob = -1.25    # unsure what it heard (Whisper confidence below this)? ask "did you say ...?" first. 0 = never
 stt = "mlx-whisper"              # or "faster-whisper"
 stt_model = "mlx-community/whisper-large-v3-turbo"
 tts = "kokoro"                   # "kokoro" (local), "edge" (online, more natural) or "say"
@@ -29,10 +36,14 @@ edge_voice = "en-GB-RyanNeural"  # only used when tts = "edge"
 
 [llm]
 provider = "nim"
+redact_secrets = true             # mask passwords, API keys, private keys and card numbers before anything is sent to the model
 chat_model = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"   # tested live: chat, tools and vision all work
 fast_model = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
 vision_model = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
-fallback_models = ["nvidia/nemotron-3.5-super-vl-120b-a12b", "nvidia/nemotron-3.5-lightning-30b-a3b"]   # tried if the above is gone
+fallback_models = ["nvidia/nemotron-3.5-lightning-30b-a3b"]   # tried if the above is gone; only models that really answer are worth listing
+local_fallback = true             # offline, or every online model down: use a model on this Mac through Ollama (ollama.com)
+local_model = "qwen3.5:4b"        # any tool-capable model from `ollama list`
+announce_switches = true          # say so when switching to a backup, going local, or coming back online
 temperature = 0.6
 max_tool_iterations = 6
 request_timeout_s = 20
@@ -94,6 +105,12 @@ confirm_risky = true
 never_click_labels = ["send","post","submit","buy","pay","purchase","delete","remove","confirm order"]
 terminal_allowlist_no_confirm = ["ls","pwd","df -h","uptime"]
 transcript_retention_days = 7
+# Switch whole capabilities off. Their tools are hidden from the model and refused if called anyway.
+# Names: "shell", "browser", "screen", "files", "messaging", or any single tool category.
+disabled_capabilities = []
+# How Jarvis may act in each app: "auto", "ask" (spoken yes first) or "never" (look only).
+# Built in: terminals and password managers never, messaging and mail apps ask.
+# app_rules = { Terminal = "auto", Notes = "ask" }
 
 [memory]
 enabled = true

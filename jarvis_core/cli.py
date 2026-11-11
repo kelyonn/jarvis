@@ -275,10 +275,18 @@ def _cmd_forget(args: argparse.Namespace) -> int:
     return forget_cli(all_=args.all, person=args.person)
 
 
+def _cmd_stats(args: argparse.Namespace) -> int:
+    from jarvis_core.metrics import Metrics, format_summary
+
+    print(format_summary(Metrics().summary(args.days)))
+    return 0
+
+
 def _cmd_memory(args: argparse.Namespace) -> int:
     from jarvis_core.memory.cli import list_cli
 
-    return list_cli()
+    return list_cli(search=args.search, forget=args.forget, edit=tuple(args.edit) if args.edit else None,
+                    episodes=args.episodes, styles=args.styles, as_json=args.json)
 
 
 def _cmd_shortcuts(args: argparse.Namespace) -> int:
@@ -388,7 +396,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--person", default=None)
     s.set_defaults(fn=_cmd_forget)
 
-    s = sub.add_parser("memory", help="list what Jarvis remembers")
+    s = sub.add_parser("stats", help="how fast Jarvis is: speech recognition, thinking, time to first sound, idle cost")
+    s.add_argument("--days", type=float, default=None, help="only the last N days")
+    s.set_defaults(fn=_cmd_stats)
+
+    s = sub.add_parser("memory", help="see, search, correct and delete what Jarvis remembers")
+    s.add_argument("--search", default=None, metavar="TEXT", help="only memories matching TEXT")
+    s.add_argument("--forget", default=None, metavar="ID", help="delete one memory (full id, or the first 4+ characters)")
+    s.add_argument("--edit", nargs=2, default=None, metavar=("ID", "TEXT"), help="rewrite one memory")
+    s.add_argument("--episodes", action="store_true", help="include the one-line notes of past conversations")
+    s.add_argument("--styles", action="store_true", help="include learned writing styles")
+    s.add_argument("--json", action="store_true", help="machine-readable output")
     s.set_defaults(fn=_cmd_memory)
 
     s = sub.add_parser("shortcuts", help="list or install the Shortcuts Jarvis uses (Focus, Night Shift, True Tone, Stage Manager)")

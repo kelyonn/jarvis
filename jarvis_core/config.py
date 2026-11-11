@@ -67,14 +67,29 @@ class ActivationCfg(_Model):
     wake_gate_rms: int = 60
     wake_threshold: float = 0.6
     hotkey: str = "option+space"
+    # Hold Ctrl+Option+Space, speak, let go: the words are typed into the front app (no assistant, no reply).
+    dictation: bool = True
     follow_up_seconds: float = 8.0
     # Once you are properly talking (2+ turns), Jarvis keeps listening this long between replies, like a person would.
     conversation_follow_up_seconds: float = 14.0
+    # While Jarvis talks it does NOT listen to your voice (no talking over it, no "Hey Jarvis" to interrupt). Hold Space instead:
+    # the moment you press it Jarvis stops, it listens while you hold, and acts on what you said when you let go. The Shell
+    # only grabs the Space key while Jarvis is talking, so typing is untouched. The voice interruption code below stays; set
+    # this to false to use it again.
+    space_to_interrupt: bool = True
     barge_in: bool = True  # talking over Jarvis stops it: on headphones always, on speakers only with a voiceprint (see below)
     # Off by default: on speakers there is no echo cancellation, and a voiceprint alone does not stop Jarvis hearing itself
     # (it interrupted its own replies). Use "Hey Jarvis", the Stop button or Option+Space to interrupt on speakers.
     barge_in_speakers: bool = False
+    # Software echo cancellation for frontends without it (the Shell): subtracts what Jarvis is playing from the mic so you
+    # can talk over it on speakers. Off until you have checked it on your own Mac: say something long, watch the log line
+    # "aec: removing N dB of echo", and enable it if N stays above aec_min_erle_db.
+    aec: bool = False
+    aec_min_erle_db: float = 12.0  # barge-in on speakers is only trusted once this much echo is being removed
     end_silence_ms: int = 600
+    # You stopped right after "open the" or "set a timer for": wait this much longer for the rest instead of acting on half a sentence.
+    extend_unfinished: bool = True
+    extend_wait_s: float = 1.6
     follow_up_end_silence_ms: int = 700
     no_speech_timeout_s: float = 5.0
     max_utterance_s: float = 30.0
@@ -94,6 +109,9 @@ class VoiceCfg(_Model):
     speaker_barge_threshold: float = 0.50  # when interrupting: the audio then also holds Jarvis's own voice
     speaker_grace_s: float = 30.0  # right after it has recognised you, it keeps talking to you without re-proving it...
     speaker_grace_threshold: float = 0.5  # ...at this lower bar
+    # When the recogniser is this unsure of what it heard (Whisper's average log-probability, usually -0.2 to -0.6 when it
+    # is confident), Jarvis asks "did you say ...?" before acting. 0 turns this off.
+    low_confidence_logprob: float = -1.25
     speaker_adapt: bool = True  # every clear match nudges the voiceprint toward how you sound through this mic
     humanize: bool = True  # clause-level pacing, pauses and speed variation
     edge_voice: str = "en-GB-RyanNeural"  # used when tts = "edge" (online; alt: en-GB-ThomasNeural)
@@ -119,11 +137,18 @@ class LLMCfg(_Model):
     max_tokens: int = 700
     max_tool_iterations: int = 14
     filler_after_s: float = 1.5  # a tool slower than this gets a short spoken line ("One moment."); 0 turns it off
+    redact_secrets: bool = True  # mask passwords, API keys, private keys and card numbers before anything is sent to the model
     tool_selection: bool = True  # offer only relevant tool categories per request (faster, more accurate)
     reasoning: bool = True  # think privately (chain / tree / graph of thoughts) on requests that benefit; simple ones skip it
     max_think_words: int = 260  # cap on the private working notes per reply, so a voice answer stays quick
     think_timeout_s: float = 8.0  # give up on the private first pass after this long and answer directly
     request_timeout_s: float = 20.0
+    # Offline (or every online model down): answer from a model running on this Mac through Ollama (https://ollama.com).
+    local_fallback: bool = True
+    local_model: str = "qwen3.5:4b"
+    local_host: str = "http://localhost:11434"
+    local_timeout_s: float = 60.0
+    announce_switches: bool = True  # say so when Jarvis moves to a backup model, goes local because you're offline, or comes back
 
 
 class BriefingCfg(_Model):
@@ -229,6 +254,12 @@ class SafetyCfg(_Model):
     )
     transcript_retention_days: int = 7
     protected_apps: list[str] = Field(default_factory=list)  # never quit or closed; Dia is always protected on top of these
+    # Capabilities switched off entirely: their tools are hidden from the model and refused if called anyway.
+    # Names: shell, browser, screen, files, messaging (or any single tool category).
+    disabled_capabilities: list[str] = Field(default_factory=list)
+    # How Jarvis may act in each app: "auto" (just do it), "ask" (a spoken yes first) or "never" (look only).
+    # Terminals and password managers are "never", messaging and mail apps are "ask", unless you say otherwise here.
+    app_rules: dict[str, str] = Field(default_factory=dict)
 
 
 class MemoryCfg(_Model):
