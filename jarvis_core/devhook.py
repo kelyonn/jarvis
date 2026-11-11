@@ -29,7 +29,12 @@ async def run_request(assistant: Any, req: dict[str, Any]) -> dict[str, Any]:
     if "shell" in req:  # a raw request to the Shell, e.g. {"shell": "ax.tree", "args": {"app": "Clock"}}
         try:
             data = await assistant.ctx.shell_request(str(req["shell"]), req.get("args") or {}, timeout=float(req.get("timeout", 20)))
-            return {"ok": True, "result": json.dumps(data, default=str)[:9000]}
+            full = json.dumps(data, default=str)
+            if req.get("save"):  # keep the whole answer (a big AX tree) in a file; the result below is only a preview
+                from pathlib import Path
+
+                Path(str(req["save"])).write_text(full)
+            return {"ok": True, "result": full[:9000]}
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": f"{type(e).__name__}: {e}"[:600]}
     if "profile" in req:
@@ -53,7 +58,9 @@ async def run_request(assistant: Any, req: dict[str, Any]) -> dict[str, Any]:
     if tool is None:
         return {"error": f"unknown tool {name}"}
     args = req.get("args") or {}
-    decision = tool.decide(assistant.ctx, args)
+    from jarvis_core.policy import gate
+
+    decision = gate.check(tool, assistant.ctx, args)
     if decision.action != "allow":
         return {"refused": f"{name} needs confirmation or is blocked"}
     try:

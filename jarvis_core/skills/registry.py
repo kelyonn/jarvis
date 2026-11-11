@@ -24,6 +24,7 @@ CORE_MODULES = [
     "jarvis_core.skills.routines",
     "jarvis_core.skills.more",
     "jarvis_core.skills.calc",
+    "jarvis_core.skills.ui_tools",
 ]
 
 # Optional modules from later phases; absent ones are skipped.
@@ -33,6 +34,7 @@ OPTIONAL_MODULES = [
     "jarvis_core.skills.comms_tools",
     "jarvis_core.skills.google_tools",
     "jarvis_core.skills.vision_tools",
+    "jarvis_core.skills.camera_tools",
     "jarvis_core.skills.memory_tools",
     "jarvis_core.skills.voice_id_tools",
 ]

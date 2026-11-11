@@ -221,7 +221,7 @@ async def test_kill_switch_stops_before_the_next_action():
 
     ctx.narrate = narrate
     res = await cu.run("open things")
-    assert res.stopped == "killed" and res.spoken().startswith("Stopped, sir.")
+    assert res.stopped == "killed" and res.spoken().startswith("Stopped.")
     assert ctx.runner.calls == []  # not even the first app was opened
     assert [o for o, _ in shell.requests][-1] == "input.end"
     cu.running = True
@@ -283,6 +283,28 @@ async def test_errors_end_the_run_and_private_apps_are_refused():
     assert not any(c[0] == "open" for c in ctx.runner.calls)
 
 
+async def test_app_rules_apply_to_computer_use_too():
+    cu, ctx, shell, llm, _ = make([act("done", summary="x")], shell=FakeShell(app="Terminal"))
+    res = await cu.run("tidy my files")
+    assert res.stopped == "blocked" and "off limits" in res.summary and llm.calls == []
+
+    cu, ctx, shell, llm, _ = make([act("done", summary="ok")], shell=FakeShell(app="Slack"))
+    assert (await cu.run("tidy my files")).done  # the built-in "ask" list is not enforced here: it already asks to start
+
+    cu, ctx, shell, llm, _ = make([act("done", summary="x")], shell=FakeShell(app="Slack"))
+    ctx.cfg.safety.app_rules = {"slack": "ask"}
+    res = await cu.run("tidy my files")
+    assert res.stopped == "blocked" and "ask first" in res.summary and llm.calls == []
+
+    cu, ctx, shell, llm, _ = make([act("done", summary="Done in Slack")], shell=FakeShell(app="Slack"))
+    ctx.cfg.safety.app_rules = {"slack": "ask"}
+    assert (await cu.run("open the general channel in Slack")).done  # you named it: that is the yes
+
+    cu, ctx, shell, llm, _ = make([act("done", summary="ok")], shell=FakeShell(app="Terminal"))
+    ctx.cfg.safety.app_rules = {"terminal": "auto"}
+    assert (await cu.run("look at the terminal")).done  # your own rule wins
+
+
 async def test_requires_llm_and_audits():
     ctx = ToolContext(cfg=Config(), frontend=FakeShell(), audit=AuditLog())
     with pytest.raises(SkillError):
@@ -302,7 +324,7 @@ async def test_tools_confirm_and_run():
     cu_tool = reg.get("computer_use")
     assert cu_tool.risk == Risk.CONFIRM
     prompt = cu_tool.decide(ToolContext(cfg=Config()), {"goal": "open my calendar."}).prompt
-    assert "open my calendar" in prompt and "say stop" in prompt and prompt.endswith("Shall I proceed?")
+    assert "open my calendar" in prompt and "say stop" in prompt and prompt.endswith("Go ahead?")
 
     cu, ctx, shell, llm, _ = make([act("done", summary="Calendar is open, sir.")])
     ctx.services.update(computer_use=cu, vision=ScreenVision(ctx, ScriptedLLM(["A calendar app."])))
