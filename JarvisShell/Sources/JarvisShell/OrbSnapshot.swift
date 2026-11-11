@@ -66,6 +66,62 @@ enum OrbSnapshot {
                 try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(name).png"))
             }
         }
+        let cardCases: [(String, String, String, [String: Any])] = [
+            ("card_email", "is there a GPA cut-off in the Boomi mail?", "No cut-off in the email itself.",
+             ["kind": "tile", "icon": "envelope", "kicker": "Email · PESU placements · 4:32 pm", "title": "Boomi Software internship hiring drive",
+              "body": "Find the JD and hiring schedule. Register on the placement app before the deadline.",
+              "chips": [["text": "17 November 2026", "tone": ""], ["text": "19 November 2026", "tone": ""], ["text": "14.5 LPA", "tone": "warn"]],
+              "actions": [["label": "Open in Gmail", "kind": "url", "value": "https://mail.google.com", "primary": true],
+                          ["label": "Read it all", "kind": "say", "value": "read it"], ["label": "Draft reply", "kind": "say", "value": "reply"]]]),
+            ("card_weather", "do I need an umbrella", "Yes, rain from about three.",
+             ["kind": "glance", "icon": "cloud.sun", "kicker": "Bengaluru", "big": "26°", "big_note": "Light rain · feels 27°", "subtitle": "High 29°, low 21°",
+              "rows": [["label": "Now", "value": "10% rain", "tone": ""], ["label": "+3 h", "value": "70% rain", "tone": "warn"]],
+              "chips": [["text": "Wind 12 km/h", "tone": ""], ["text": "Sunset 18:02", "tone": ""]]]),
+            ("card_markets", "how are markets", "Green at home, Nasdaq slightly off.",
+             ["kind": "facts", "icon": "chart.line.uptrend.xyaxis", "kicker": "Markets",
+              "rows": [["label": "Nifty 50", "value": "24,310  +0.6%", "tone": "up"], ["label": "Nasdaq", "value": "19,120  −0.3%", "tone": "down"]],
+              "footnote": "Delayed quotes"]),
+            ("card_day", "what's on today", "Four things, free from two.",
+             ["kind": "list", "icon": "calendar", "kicker": "Today",
+              "items": [["title": "Standup", "subtitle": "Google Meet", "trailing": "10:00 am"], ["title": "DBMS lab", "subtitle": "", "trailing": "11:30 am"],
+                        ["title": "Gym", "subtitle": "", "trailing": "6:30 pm"]],
+              "actions": [["label": "Open event", "kind": "url", "value": "https://calendar.google.com", "primary": true]]]),
+            ("card_messages", "any messages?", "Naan wants the notes before tonight.",
+             ["kind": "list", "icon": "bubble.left.and.bubble.right", "kicker": "2 unread",
+              "items": [["title": "Naan · WhatsApp", "subtitle": "send the DBMS notes pls", "trailing": "2:16 pm", "unread": true, "initial": "N"],
+                        ["title": "Mom · iMessage", "subtitle": "call when free", "trailing": "1:02 pm", "unread": true, "initial": "M"]],
+              "actions": [["label": "Reply to Naan", "kind": "say", "value": "reply to Naan", "primary": true]]]),
+            ("card_confirm", "clear out my downloads", "That moves 214 files to the Trash. Go ahead?",
+             ["kind": "tile", "tone": "confirm", "icon": "exclamationmark.triangle", "kicker": "Needs your OK", "title": "Move 214 files to the Trash?",
+              "actions": [["label": "Yes, go ahead", "kind": "say", "value": "yes", "primary": true], ["label": "Cancel", "kind": "say", "value": "no"]]]),
+            ("card_battery", "how's my battery", "41 percent, about three hours left.",
+             ["kind": "glance", "icon": "battery.50", "kicker": "Battery", "big": "41%", "big_note": "On battery", "subtitle": "About 3 hours left", "progress": 0.41]),
+            ("card_media", "play something calm", "Playing Weightless.",
+             ["kind": "media", "icon": "music.note", "title": "Weightless", "subtitle": "Marconi Union",
+              "actions": [["label": "Pause", "kind": "say", "value": "pause the music", "primary": true], ["label": "Next", "kind": "say", "value": "next song"]]]),
+            ("card_error", "open the Boomi mail", "Gmail needs you to sign in again.",
+             ["kind": "tile", "tone": "error", "icon": "exclamationmark.octagon", "kicker": "Problem",
+              "rows": [["label": "What", "value": "Google sign-in expired", "tone": ""], ["label": "Fix", "value": "jarvisd google --add", "tone": ""]]]),
+        ]
+        for (name, q, spoken, dict) in cardCases {
+            let m = OrbModel()
+            m.state = .followUp
+            m.customHeight = 330
+            var line = ChatLine(fromUser: false, text: spoken)
+            if let c = CardData.parse(dict) { line.cards = [c] }
+            m.messages = [ChatLine(fromUser: true, text: q), line]
+            let h = NSHostingView(rootView: OrbView(model: m, onClick: { _ in }, onSize: { _ in }, onDrag: { _ in })
+                .background(Color(red: 0.85, green: 0.87, blue: 0.9)))
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 660, height: 440), styleMask: [.borderless], backing: .buffered, defer: false)
+            w.contentView = h
+            h.frame = NSRect(x: 0, y: 0, width: 660, height: 440)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+            h.layoutSubtreeIfNeeded()
+            if let rep = h.bitmapImageRepForCachingDisplay(in: h.bounds) {
+                h.cacheDisplay(in: h.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(name).png"))
+            }
+        }
         for (name, state, user, reply, notice) in cases {
             let m = OrbModel()
             m.state = state; m.notice = notice

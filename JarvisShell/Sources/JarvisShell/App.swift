@@ -12,12 +12,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let orb = OrbPanel()
     private let hotkey = Hotkey()
     private let typeHotkey = Hotkey.typing()  // Option+Shift+Space: type instead of talk
+    private let talkOverHotkey = Hotkey.talkOver()  // plain Space, but only while Jarvis is talking: stop it and speak
+    private var spaceToInterrupt = false  // the core says whether this mode is on (it also stops listening while it talks)
+    private let dictateHotkey = Hotkey.dictation()  // hold Control+Option+Space: speak, and the words are typed in the front app
     private let lifecycle = Lifecycle()
     private let usage = DeviceUsage()
     private let ax = AXWindows()
     private let input = InputControl()
     private let location = LocationProvider()
     private var statusItem: NSStatusItem!
+    private let memoryWindow = MemoryWindowController()
     private var statusMenuItem: NSMenuItem!
     private var muteItem: NSMenuItem!
     private var loginItem: NSMenuItem!
@@ -54,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         orb.announce("Jarvis is running. Say \"Hey Jarvis\" or press Option+Space (Option+Shift+Space to type). Its icon is in the menu bar; right-click the orb for options.")
         orb.onClick = { [weak self] a in self?.client.send(Control(MessageType.orbClick, ["action": a])) }
         orb.onText = { [weak self] t in self?.client.send(Control(MessageType.textInput, ["text": t])) }
+        orb.onCardAction = { [weak self] a in self?.client.send(Control(MessageType.cardAction, ["kind": a.kind.rawValue, "value": a.value])) }
         orb.startWatchingOtherApps()
 
         lifecycle.start()
@@ -68,14 +73,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         client.start()
         supervisor.onStatus = { [weak self] s in DispatchQueue.main.async { self?.supervisorChanged(s) } }
         if ProcessInfo.processInfo.environment["JARVIS_NO_DAEMON"] == nil { supervisor.start() }
+        // `kill`, logout and Activity Monitor's Quit send signals that would end the app without applicationWillTerminate,
+        // leaving the daemon running on its own. Turn them into a normal quit so the daemon is always stopped with us.
+        for sig in [SIGTERM, SIGINT, SIGHUP] {
+            signal(sig, SIG_IGN)
+            let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            src.setEventHandler { NSApp.terminate(nil) }
+            src.resume()
+            signalSources.append(src)
+        }
         usage.start()
         refreshStatus()
     }
+
+    private var signalSources: [DispatchSourceSignal] = []
 
     func applicationWillTerminate(_ n: Notification) {
         input.endSession()
         hotkey.unregister()
         typeHotkey.unregister()
+        dictateHotkey.unregister()
+        talkOverHotkey.unregister()
         audio.stop()
         client.stop()
         supervisor.stop()
@@ -106,6 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the main thread was busy (laying out the orb card, say) and were dropped: Jarvis went silent half the time.
         client.onTTS = { [weak self] f in DispatchQueue.main.async { self?.audio.enqueue(f) } }
         client.onControl = { [weak self] c in DispatchQueue.main.async { self?.route(c) } }
+        memoryWindow.bridge.send = { [weak self] c in self?.client.send(c) }
     }
 
     private func wireAudio() {
@@ -128,6 +147,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.orb.beginTyping()
         }
         typeHotkey.register()
+        dictateHotkey.onAction = { [weak self] a in
+            guard let self, !self.lifecycle.suspended, a == "down" || a == "up" else { return }
+            self.client.send(Control(MessageType.hotkey, ["action": "dictate_" + a]))
+        }
+        dictateHotkey.register()
+        talkOverHotkey.onAction = { [weak self] a in
+            guard let self, !self.lifecycle.suspended, a == "down" || a == "up" else { return }
+            self.client.send(Control(MessageType.hotkey, ["action": a]))  // the same down/up as Option+Space: the core stops and listens
+        }
+    }
+
+    /// Space belongs to Jarvis only while it is talking (and never while you are typing to it).
+    private func updateTalkOverKey() {
+        let talking = lastState == .speaking || lastState == .announcing
+        talkOverHotkey.setEnabled(spaceToInterrupt && talking && !orb.model.typing && !lifecycle.suspended)
     }
 
     private func wireLifecycle() {
@@ -163,15 +197,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func route(_ c: Control) {
         switch c.type {
+        case MessageType.memoryResult:
+            memoryWindow.bridge.handle(c)
         case MessageType.state:
             let name = c.string("name") ?? ""
             if let s = OrbStateName(rawValue: name) { lastState = s }
             orb.apply(state: name, caption: c.string("caption"))
+            updateTalkOverKey()
             refreshStatus()
+        case MessageType.options:
+            spaceToInterrupt = c.bool("space_to_interrupt") ?? false
+            updateTalkOverKey()
         case MessageType.caption:
             orb.showCaption(c.string("text") ?? "", final: c.bool("final") ?? false)
         case MessageType.rich:
             orb.showRich(c.string("text") ?? "")
+        case MessageType.card:
+            if let d = c.data["card"] as? [String: Any], let card = CardData.parse(d) { orb.showCard(card) }
         case MessageType.hideUI:
             orb.handle("hide")
         case MessageType.orbQueue:
@@ -233,7 +275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case MessageType.inputRequest:
                     guard AXIsProcessTrusted() else { throw AXFailure(message: "Accessibility permission is not granted") }
                     result = .success(try self.input.handle(op: op, args: args))
-                default: result = .success(try Screenshot.capture(args: args))
+                default: result = .success(op == "camera" ? try Camera.capture(args: args) : try Screenshot.capture(args: args))
                 }
             } catch let e as AXFailure { result = .failure(e) }
             catch { result = .failure(AXFailure(message: error.localizedDescription)) }
@@ -278,6 +320,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pinItem.state = orb.pinned ? .on : .off
         m.addItem(pinItem)
         m.addItem(item("Show conversation", #selector(showConversation)))
+        m.addItem(item("Memory…", #selector(openMemory)))
         let moveMenu = NSMenu()
         for (title, key) in [("Top left", "tl"), ("Top right", "tr"), ("Bottom left", "bl"), ("Bottom right", "br")] {
             let i = item(title, #selector(moveOrb(_:)))
@@ -300,6 +343,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(item("Quit Jarvis", #selector(quit)))
         statusItem.menu = m
     }
+
+    @objc private func openMemory() { memoryWindow.show() }
 
     private func item(_ title: String, _ sel: Selector) -> NSMenuItem {
         let i = NSMenuItem(title: title, action: sel, keyEquivalent: "")

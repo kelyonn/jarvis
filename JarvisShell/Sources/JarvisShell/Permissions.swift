@@ -10,6 +10,7 @@ enum Permissions {
         [
             "mic": AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
             "camera_probe": AVCaptureDevice.authorizationStatus(for: .video) != .denied,
+            "camera": AVCaptureDevice.authorizationStatus(for: .video) == .authorized,
             "accessibility": AXIsProcessTrusted(),
             "screen": CGPreflightScreenCaptureAccess(),
             "location": location.authorized,
@@ -23,6 +24,9 @@ enum Permissions {
         case "mic":
             AVCaptureDevice.requestAccess(for: .audio) { _ in }
             return "Microphone"
+        case "camera":
+            AVCaptureDevice.requestAccess(for: .video) { _ in }  // shows the system prompt the first time
+            return "Camera"
         case "accessibility":
             let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
             _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)

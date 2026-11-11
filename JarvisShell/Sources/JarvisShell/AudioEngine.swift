@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreAudio
+import CoreMedia
 import Foundation
 import JarvisShellCore
 
@@ -22,6 +23,8 @@ final class AudioEngine {
     private static let idleSeconds = 4.0
 
     private var capture: AVAudioEngine?
+    private var session: AVCaptureSession?            // the built-in microphone, used instead of a Bluetooth headset's
+    private var sessionDelegate: MicSampleDelegate?
     private var tappedRate: Double = 0
     private var tappedChannels: AVAudioChannelCount = 0
     private var restartTimes: [Date] = []
@@ -50,7 +53,7 @@ final class AudioEngine {
         set { lock.lock(); micAllowed = newValue; lock.unlock() }
     }
 
-    var capturing: Bool { capture != nil }
+    var capturing: Bool { capture != nil || session != nil }
     var playbackRunning: Bool { engine.isRunning }
 
     // MARK: playback lifecycle
@@ -143,25 +146,58 @@ final class AudioEngine {
     }
 
     private func reopenCapture(reason: String) {
-        guard capture != nil else { return }
+        guard capturing else { return }
         let now = Date()
         restartTimes = restartTimes.filter { now.timeIntervalSince($0) < 20 }
         guard restartTimes.count < 5 else { return }
         restartTimes.append(now)
         NSLog("Jarvis audio: reopening the microphone (\(reason))")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-            guard let self, self.capture != nil else { return }
+            guard let self, self.capturing else { return }
             self.stopCapture()
             self.startCapture()
         }
     }
 
+    /// Listens on the Mac's own microphone while the default input is a Bluetooth headset (see InputRouting): opening the
+    /// headset's mic would switch it to low-quality call mode for as long as Jarvis listens.
+    private func startBuiltInSession() -> Bool {
+        guard let dev = InputRouting.replacementForBluetoothInput(), let uid = InputRouting.uid(dev),
+              let mic = AVCaptureDevice(uniqueID: uid), let input = try? AVCaptureDeviceInput(device: mic) else { return false }
+        let s = AVCaptureSession()
+        guard s.canAddInput(input) else { return false }
+        s.addInput(input)
+        let out = AVCaptureAudioDataOutput()
+        out.audioSettings = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: Wire.micSampleRate,
+                             AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false,
+                             AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false]
+        let delegate = MicSampleDelegate { [weak self] samples in self?.handleBuiltIn(samples) }
+        out.setSampleBufferDelegate(delegate, queue: DispatchQueue(label: "jarvis.mic.builtin"))
+        guard s.canAddOutput(out) else { return false }
+        s.addOutput(out)
+        chunker.reset()
+        s.startRunning()
+        guard s.isRunning else { return false }
+        session = s
+        sessionDelegate = delegate
+        NSLog("Jarvis audio: listening on the built-in microphone, so the Bluetooth headset stays in music mode")
+        return true
+    }
+
+    private func handleBuiltIn(_ samples: [Int16]) {
+        guard micEnabled, !samples.isEmpty else { return }
+        for frame in chunker.push(samples) { onMicFrame?(frame) }
+    }
+
     func startCapture() {
         installInputDeviceListener()
-        guard capture == nil else { return }
+        guard capture == nil, session == nil else { return }
+        if startBuiltInSession() { return }
         let e = AVAudioEngine()
         let input = e.inputNode
-        let inFormat = input.outputFormat(forBus: 0)
+        // The hardware side: after choosing a different device the node's cached output format can still describe the old
+        // one (a headset's 16 kHz), and a tap with the wrong format throws, so ask the device and let the tap follow the node.
+        let inFormat = input.inputFormat(forBus: 0)
         guard inFormat.sampleRate > 0, inFormat.channelCount > 0 else {
             onError?("No microphone available")
             return
@@ -170,7 +206,7 @@ final class AudioEngine {
         chunker.reset()
         tappedRate = inFormat.sampleRate
         tappedChannels = inFormat.channelCount
-        input.installTap(onBus: 0, bufferSize: 1024, format: inFormat) { [weak self] buf, _ in
+        input.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buf, _ in
             self?.handleMic(buf)
         }
         e.prepare()
@@ -185,6 +221,11 @@ final class AudioEngine {
     }
 
     func stopCapture() {
+        if let s = session {
+            session = nil
+            sessionDelegate = nil
+            s.stopRunning()  // the OS microphone indicator goes off
+        }
         guard let e = capture else { return }
         capture = nil
         NotificationCenter.default.removeObserver(self, name: .AVAudioEngineConfigurationChange, object: e)
@@ -197,7 +238,7 @@ final class AudioEngine {
         // call mode), so only reopen if the engine really stopped or the input format changed, and never in a tight loop.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             guard let self, let e = self.capture else { return }
-            let fmt = e.inputNode.outputFormat(forBus: 0)
+            let fmt = e.inputNode.inputFormat(forBus: 0)
             let formatChanged = fmt.sampleRate != self.tappedRate || fmt.channelCount != self.tappedChannels
             guard !e.isRunning || formatChanged else { return }
             let now = Date()
@@ -387,5 +428,25 @@ enum Earcons {
             i += n
         }
         return buf
+    }
+}
+
+
+/// Receives 16 kHz mono Int16 audio from the capture session and hands the samples on.
+final class MicSampleDelegate: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
+    private let onSamples: ([Int16]) -> Void
+    init(_ onSamples: @escaping ([Int16]) -> Void) { self.onSamples = onSamples }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard let block = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
+        var length = 0
+        var ptr: UnsafeMutablePointer<CChar>?
+        guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length,
+                                          dataPointerOut: &ptr) == kCMBlockBufferNoErr, let ptr, length >= 2 else { return }
+        let count = length / MemoryLayout<Int16>.size
+        let samples = ptr.withMemoryRebound(to: Int16.self, capacity: count) {
+            Array(UnsafeBufferPointer(start: $0, count: count))
+        }
+        onSamples(samples)
     }
 }

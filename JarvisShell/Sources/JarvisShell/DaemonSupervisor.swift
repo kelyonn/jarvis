@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import JarvisShellCore
 
@@ -119,12 +120,41 @@ final class DaemonSupervisor {
             queue.asyncAfter(deadline: .now() + 1) { [weak self] in self?.launch() }
             return
         }
+        if p.terminationStatus == 3 {
+            // Another daemon holds the lock: one left behind by an earlier Jarvis.app that was killed or crashed.
+            // That is not a crash of ours. Stop the leftover (only if nothing else owns it) and start our own.
+            if crashes.record() { status = .failed; wanted = false; return }
+            Self.stopOrphanDaemon()
+            queue.asyncAfter(deadline: .now() + 2) { [weak self] in self?.launch() }
+            return
+        }
         if crashes.record() {
             status = .failed
             wanted = false
             return
         }
         scheduleRetry()
+    }
+
+    /// The pid in the daemon lock file, if that process is a Jarvis daemon that has lost its app (parent is launchd).
+    static func stopOrphanDaemon() {
+        let lock = home.appendingPathComponent("run/daemon.lock")
+        guard let text = try? String(contentsOf: lock, encoding: .utf8),
+              let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 1 else { return }
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return }
+        let ppid = info.kp_eproc.e_ppid
+        var argsMib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var argSize = 0
+        guard sysctl(&argsMib, 3, nil, &argSize, nil, 0) == 0, argSize > 0 else { return }
+        var buf = [CChar](repeating: 0, count: argSize)
+        guard sysctl(&argsMib, 3, &buf, &argSize, nil, 0) == 0 else { return }
+        let args = String(decoding: buf.prefix(argSize).map { UInt8(bitPattern: $0 == 0 ? 32 : $0) }, as: UTF8.self)
+        guard ppid == 1, args.contains("jarvis_core"), args.contains(" run") else { return }
+        NSLog("Jarvis: stopping a leftover daemon (pid \(pid)) from an earlier run")
+        kill(pid, SIGTERM)
     }
 
     private func scheduleRetry() {

@@ -11,20 +11,42 @@ final class Hotkey {
     let hotKeyID: UInt32
     private let keyCode: Int
     private let modifiers: Int
-    init(id: UInt32 = 1, keyCode: Int = kVK_Space, modifiers: Int = optionKey) {
-        hotKeyID = id; self.keyCode = keyCode; self.modifiers = modifiers
+    private let longPressCancels: Bool
+    init(id: UInt32 = 1, keyCode: Int = kVK_Space, modifiers: Int = optionKey, longPressCancels: Bool = true) {
+        hotKeyID = id; self.keyCode = keyCode; self.modifiers = modifiers; self.longPressCancels = longPressCancels
     }
+
+    /// Plain Space, held. Only registered while Jarvis is talking (see `setEnabled`), so Space types normally the rest of the
+    /// time. Pressing it stops Jarvis and listens; letting go sends what you said. Holding it never cancels the conversation.
+    static func talkOver() -> Hotkey { Hotkey(id: 4, keyCode: kVK_Space, modifiers: 0, longPressCancels: false) }
 
     /// Option+Shift+Space: open the type box.
     static func typing() -> Hotkey { Hotkey(id: 2, keyCode: kVK_Space, modifiers: optionKey | shiftKey) }
+
+    /// Control+Option+Space, held: dictate into the front app.
+    static func dictation() -> Hotkey { Hotkey(id: 3, keyCode: kVK_Space, modifiers: controlKey | optionKey) }
 
     private var ref: EventHotKeyRef?
     private var handler: EventHandlerRef?
     private var longPress: DispatchWorkItem?
     private var isDown = false
     private var longFired = false
+    private(set) var registered = false
+    private var unregisterAfterRelease = false
+
+    /// Grab the key (or give it back). Giving it back while it is held waits for the release, so the "up" is never lost.
+    func setEnabled(_ on: Bool) {
+        if on {
+            unregisterAfterRelease = false
+            if !registered { register() }
+        } else if registered {
+            if isDown { unregisterAfterRelease = true } else { unregister() }
+        }
+    }
 
     func register() {
+        guard !registered else { return }
+        registered = true
         var specs = [
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
@@ -54,6 +76,8 @@ final class Hotkey {
         if let handler { RemoveEventHandler(handler) }
         ref = nil
         handler = nil
+        registered = false
+        unregisterAfterRelease = false
     }
 
     private func pressed() {
@@ -63,7 +87,7 @@ final class Hotkey {
         let busy = isBusy()
         onAction?("down")
         longPress?.cancel()
-        if busy {
+        if busy && longPressCancels {
             let work = DispatchWorkItem { [weak self] in
                 guard let self, self.isDown else { return }
                 self.longFired = true
@@ -79,5 +103,6 @@ final class Hotkey {
         isDown = false
         longPress?.cancel()
         if !longFired { onAction?("up") }
+        if unregisterAfterRelease { unregister() }
     }
 }

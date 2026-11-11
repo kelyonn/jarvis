@@ -23,12 +23,16 @@ public enum MessageType {
     public static let orbClick = "orb_click"
     public static let textInput = "text_input"
     public static let command = "command"
+    public static let memoryRequest = "memory_request"
+    public static let cardAction = "card_action"
     public static let ping = "ping"
     public static let pong = "pong"
     // core -> Shell
     public static let welcome = "welcome"
     public static let hideUI = "hide_ui"
     public static let rich = "rich"
+    public static let card = "card"
+    public static let options = "options"
     public static let state = "state"
     public static let caption = "caption"
     public static let playBegin = "play_begin"
@@ -44,6 +48,7 @@ public enum MessageType {
     public static let notify = "notify"
     public static let mic = "mic"
     public static let micOpen = "mic_open"
+    public static let memoryResult = "memory_result"
 }
 
 public enum ProtocolError: Error, Equatable {

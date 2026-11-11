@@ -14,6 +14,7 @@ struct ChatLine: Identifiable, Equatable {
     let fromUser: Bool
     var text: String
     var rich: String? = nil   // formatted version (markdown) for code, working, tables, steps
+    var cards: [CardData] = []   // structured cards (email, schedule, weather...) that came with this reply
 }
 
 final class OrbModel: ObservableObject {
@@ -41,6 +42,12 @@ final class OrbModel: ObservableObject {
     private static func save(_ v: CGFloat?, _ key: String) {
         if let v { OrbPanel.store.set(Double(v), forKey: key) } else { OrbPanel.store.removeObject(forKey: key) }
     }
+
+    var autoChatHeight: CGFloat = 40   // chat area height while sizing is automatic (read when you start a resize)
+    var cardOverhead: CGFloat = 100    // card height besides the chat area (header, type box, padding)
+    /// The most room the card has between the orb and the screen edges. The card never grows past it, so the window
+    /// never has to be pushed back onto the screen (which would drag the orb along).
+    @Published var room = CGSize(width: 1000, height: 1000)
 
     var hasText: Bool { !messages.isEmpty || !notice.isEmpty }
     var cardVisible: Bool { !dismissed && (hasText || (showQueue && !queue.isEmpty) || state.isBusy || typing) }
@@ -106,18 +113,20 @@ struct OrbView: View {
     var onSize: (CGSize) -> Void
     var onDrag: (Bool) -> Void  // true while dragging, false when released
     var onSend: (String) -> Void = { _ in }
+    var onCardAction: (CardAction) -> Void = { _ in }
     var onEscape: () -> Void = {}
 
     static let widthRange: ClosedRange<CGFloat> = 320...1000
     static let heightRange: ClosedRange<CGFloat> = 80...760
-    private var autoWidth: CGFloat { model.messages.contains { $0.rich != nil } ? 600 : 460 }
-    private var autoMaxHeight: CGFloat { model.messages.contains { $0.rich != nil } ? 540 : 380 }
-    private var cardWidth: CGFloat { model.customWidth ?? autoWidth }
-    private var chatMaxHeight: CGFloat { model.customHeight ?? autoMaxHeight }
+    private var autoWidth: CGFloat { model.messages.contains { $0.rich != nil || !$0.cards.isEmpty } ? 600 : 460 }
+    private var autoMaxHeight: CGFloat { model.messages.contains { $0.rich != nil || !$0.cards.isEmpty } ? 540 : 380 }
+    private var cardWidth: CGFloat { max(min(model.customWidth ?? autoWidth, model.room.width), Self.widthRange.lowerBound) }
+    /// Tallest the chat area can be without the card running off the screen.
+    private var chatRoom: CGFloat { max(model.room.height - model.cardOverhead, Self.heightRange.lowerBound) }
+    private var chatMaxHeight: CGFloat { min(model.customHeight ?? autoMaxHeight, chatRoom) }
     /// Automatic: as tall as the conversation, up to a limit. Resized by you: exactly the height you chose (it scrolls).
-    private var chatFrameHeight: CGFloat { model.customHeight ?? min(max(chatHeight, 24), chatMaxHeight) }
+    private var chatFrameHeight: CGFloat { model.customHeight.map { min($0, chatRoom) } ?? min(max(chatHeight, 24), chatMaxHeight) }
     @State private var chatHeight: CGFloat = 40
-    @State private var resizeStart: CGSize?
     @FocusState private var inputFocused: Bool
 
     private var label: String {
@@ -231,7 +240,7 @@ struct OrbView: View {
                                             .fixedSize(horizontal: false, vertical: true)
                                     }
                                 } else {
-                                    ReplyView(line: line, conversation: { conversationText })
+                                    ReplyView(line: line, conversation: { conversationText }, onCardAction: onCardAction)
                                 }
                             }
                             Color.clear.frame(height: 1).id("bottom")
@@ -239,7 +248,7 @@ struct OrbView: View {
                         .background(GeometryReader { g in Color.clear.preference(key: HeightKey.self, value: g.size.height) })
                     }
                     .frame(height: chatFrameHeight)
-                    .onPreferenceChange(HeightKey.self) { chatHeight = $0 }
+                    .onPreferenceChange(HeightKey.self) { chatHeight = $0; model.autoChatHeight = min(max($0, 24), chatMaxHeight) }
                     .onChange(of: model.messages) { withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
                 }
             }
@@ -262,6 +271,9 @@ struct OrbView: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 11)
         .frame(width: cardWidth, alignment: .leading)
+        .background(GeometryReader { g in
+            Color.clear.onAppear { noteOverhead(g.size.height) }.onChange(of: g.size.height) { noteOverhead($1) }
+        })
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(.regularMaterial)
@@ -269,48 +281,14 @@ struct OrbView: View {
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.white.opacity(0.1), lineWidth: 0.5))
                 .shadow(color: .black.opacity(0.3), radius: 10, y: 3)
         )
-        .overlay(alignment: gripCorner) { resizeGrip.offset(gripOffset) }
+        // Fully transparent pixels let clicks fall through to the window below. This all-but-invisible margin keeps the
+        // rounded corners and the band just outside the edges clickable, so the card can be grabbed there to resize it.
+        .background(Rectangle().fill(Color.black.opacity(0.01)).padding(-6))
         .environment(\.colorScheme, .dark)
     }
 
-    /// The corner away from the orb: drag it to resize the card, double-click it to go back to automatic sizing.
-    private var gripCorner: Alignment {
-        switch (model.alignBottom, model.alignRight) {
-        case (true, true): return .topLeading
-        case (true, false): return .topTrailing
-        case (false, true): return .bottomLeading
-        case (false, false): return .bottomTrailing
-        }
-    }
-
-    /// The handle sits on the card's corner, half outside it, so it never covers the header or the type box.
-    private var gripOffset: CGSize {
-        CGSize(width: model.alignRight ? -5 : 5, height: model.alignBottom ? -5 : 5)
-    }
-
-    private var resizeGrip: some View {
-        Image(systemName: "arrow.up.left.and.arrow.down.right")
-            .font(.system(size: 7.5, weight: .bold))
-            .foregroundColor(.white.opacity(0.75))
-            .rotationEffect(.degrees(model.alignBottom == model.alignRight ? 0 : 90))
-            .frame(width: 17, height: 17)
-            .background(Circle().fill(Color(white: 0.2)))
-            .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5))
-            .contentShape(Circle())
-            .help("Drag to resize. Double-click to reset.")
-            .onTapGesture(count: 2) { model.customWidth = nil; model.customHeight = nil }
-            .highPriorityGesture(
-                DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                    .onChanged { g in
-                        let start = resizeStart ?? CGSize(width: cardWidth, height: chatFrameHeight)
-                        if resizeStart == nil { resizeStart = start }
-                        let dx = model.alignRight ? -g.translation.width : g.translation.width  // the card grows away from the orb
-                        let dy = model.alignBottom ? -g.translation.height : g.translation.height
-                        model.customWidth = min(max(start.width + dx, Self.widthRange.lowerBound), Self.widthRange.upperBound)
-                        model.customHeight = min(max(start.height + dy, Self.heightRange.lowerBound), Self.heightRange.upperBound)
-                    }
-                    .onEnded { _ in resizeStart = nil }
-            )
+    private func noteOverhead(_ cardHeight: CGFloat) {
+        model.cardOverhead = max(60, cardHeight - (model.messages.isEmpty ? 0 : chatFrameHeight))
     }
 
     private var conversationText: String {
@@ -318,7 +296,7 @@ struct OrbView: View {
     }
 
     static func plain(_ line: ChatLine) -> String {
-        [line.text, line.rich ?? ""].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        ([line.text, line.rich ?? ""] + line.cards.map(\.plainText)).filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
     static func copy(_ text: String) {
@@ -339,7 +317,7 @@ struct OrbView: View {
         }
         .contentShape(Circle())
         .gesture(dragGesture)
-        .onTapGesture { onClick(model.queue.isEmpty ? "toggle_card" : "open_queue") }
+        .onTapGesture { onClick("toggle_card") }  // always the chat; anything waiting in the queue is listed in it
         .contextMenu {
             Button("Clear conversation") { onClick("clear") }
             Button(model.muted ? "Turn Jarvis on" : "Turn Jarvis off") { onClick("mute_toggle") }
@@ -394,6 +372,7 @@ final class OrbPanel: NSPanel {
     let model = OrbModel()
     var onClick: ((String) -> Void)?
     var onText: ((String) -> Void)?
+    var onCardAction: ((CardAction) -> Void)?
 
     private static let pad: CGFloat = 10
     private static let orbHalf: CGFloat = 24  // half of the 48pt orb box
@@ -439,6 +418,7 @@ final class OrbPanel: NSPanel {
             onSize: { [weak self] s in DispatchQueue.main.async { self?.resize(to: s) } },
             onDrag: { [weak self] dragging in self?.dragging(dragging) },
             onSend: { [weak self] t in self?.sendText(t) },
+            onCardAction: { [weak self] a in self?.perform(a) },
             onEscape: { [weak self] in self?.endTyping() }
         )
         let host = FirstClickHostingView(rootView: view)
@@ -446,6 +426,8 @@ final class OrbPanel: NSPanel {
         host.autoresizingMask = [.width, .height]
         host.sizingOptions = [.intrinsicContentSize]  // report the ideal size; we place the window ourselves, anchored on the orb
         contentView = host
+        acceptsMouseMovedEvents = true
+        host.addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeAlways, .inVisibleRect], owner: host, userInfo: nil))
         self.host = host
 
         orbCenter = Self.savedCenter() ?? Self.defaultCenter(.br)
@@ -494,12 +476,94 @@ final class OrbPanel: NSPanel {
 
     /// Clicking into the card (not the orb) takes the keyboard, so text can be selected and copied with Cmd+C.
     override func sendEvent(_ event: NSEvent) {
+        if handleResize(event) { return }
         if event.type == .leftMouseDown, !isKeyWindow {
             let p = convertPoint(toScreen: event.locationInWindow)
             let o = orbScreenCenter
             if hypot(p.x - o.x, p.y - o.y) > Self.orbHalf + 4 { makeKey() }
         }
         super.sendEvent(event)
+        if event.type == .mouseMoved { updateResizeCursor(at: convertPoint(toScreen: event.locationInWindow)) }
+    }
+
+    // MARK: resizing: grab the card's outer side edge, its outer top/bottom edge, or the corner between them.
+    // (The two edges next to the orb stay put: moving them would move the orb.)
+
+    private struct ResizeDrag { var mouse: NSPoint; var width: CGFloat; var height: CGFloat; var horizontal: Bool; var vertical: Bool }
+    private var resizeDrag: ResizeDrag?
+    private var showingResizeCursor = false
+
+    /// The card's rectangle on screen (nil while it is not showing).
+    private var cardScreenRect: NSRect? {
+        guard isVisible, model.cardVisible, frame.width > 2 * Self.pad + Self.orbHalf * 2 + 1 else { return nil }
+        let strip = Self.orbHalf * 2 + 4  // the orb and the gap above/below it
+        let minY = frame.minY + Self.pad + (model.alignBottom ? strip : 0), maxY = frame.maxY - Self.pad - (model.alignBottom ? 0 : strip)
+        guard maxY - minY > 20 else { return nil }
+        return NSRect(x: frame.minX + Self.pad, y: minY, width: frame.width - 2 * Self.pad, height: maxY - minY)
+    }
+
+    /// Which way the pointer would resize the card from here: (width, height), or nil when it is not on a resizable edge.
+    private func resizeZone(at p: NSPoint) -> (h: Bool, v: Bool)? {
+        guard let c = cardScreenRect else { return nil }
+        let inside: CGFloat = 8, outside: CGFloat = 5  // the band straddles the edge, mostly on the card
+        func near(_ v: CGFloat, _ edge: CGFloat, _ outward: CGFloat) -> Bool { let d = (v - edge) * outward; return d <= outside && d >= -inside }
+        guard p.x >= c.minX - outside, p.x <= c.maxX + outside, p.y >= c.minY - outside, p.y <= c.maxY + outside else { return nil }
+        let h = model.alignRight ? near(p.x, c.minX, -1) : near(p.x, c.maxX, 1)
+        let v = !model.messages.isEmpty && (model.alignBottom ? near(p.y, c.maxY, 1) : near(p.y, c.minY, -1))
+        return h || v ? (h, v) : nil
+    }
+
+    private func cursor(for z: (h: Bool, v: Bool)) -> NSCursor {
+        if z.h && z.v {
+            if #available(macOS 15.0, *) {
+                let pos: NSCursor.FrameResizePosition = model.alignBottom ? (model.alignRight ? .topLeft : .topRight) : (model.alignRight ? .bottomLeft : .bottomRight)
+                return NSCursor.frameResize(position: pos, directions: .all)
+            }
+            return .crosshair
+        }
+        return z.h ? .resizeLeftRight : .resizeUpDown
+    }
+
+    /// Runs after SwiftUI has handled the move, so the resize cursor is not immediately replaced by the arrow.
+    private func updateResizeCursor(at p: NSPoint) {
+        if let d = resizeDrag { cursor(for: (d.horizontal, d.vertical)).set(); return }
+        if let z = resizeZone(at: p) { cursor(for: z).set(); showingResizeCursor = true }
+        else if showingResizeCursor { NSCursor.arrow.set(); showingResizeCursor = false }
+    }
+
+    private func handleResize(_ event: NSEvent) -> Bool {
+        switch event.type {
+        case .leftMouseDown:
+            let p = convertPoint(toScreen: event.locationInWindow)
+            guard let z = resizeZone(at: p), let c = cardScreenRect else { return false }
+            if event.clickCount == 2 { resizeDrag = nil; model.customWidth = nil; model.customHeight = nil; return true }
+            resizeDrag = ResizeDrag(mouse: NSEvent.mouseLocation, width: c.width,
+                                    height: model.customHeight ?? model.autoChatHeight, horizontal: z.h, vertical: z.v)
+            cursor(for: z).set()
+            return true
+        case .leftMouseDragged:
+            guard let d = resizeDrag else { return false }
+            let m = NSEvent.mouseLocation  // screen position: the window itself changes size under the pointer
+            if d.horizontal {
+                let dx = model.alignRight ? d.mouse.x - m.x : m.x - d.mouse.x  // the card grows away from the orb
+                let hi = min(OrbView.widthRange.upperBound, model.room.width)
+                model.customWidth = min(max(d.width + dx, OrbView.widthRange.lowerBound), hi)
+            }
+            if d.vertical {
+                let dy = model.alignBottom ? m.y - d.mouse.y : d.mouse.y - m.y
+                let hi = max(OrbView.heightRange.lowerBound, min(OrbView.heightRange.upperBound, model.room.height - model.cardOverhead))
+                model.customHeight = min(max(d.height + dy, OrbView.heightRange.lowerBound), hi)
+            }
+            cursor(for: (d.horizontal, d.vertical)).set()
+            return true
+        case .leftMouseUp:
+            guard resizeDrag != nil else { return false }
+            resizeDrag = nil
+            updateResizeCursor(at: NSEvent.mouseLocation)
+            return true
+        default:
+            return false
+        }
     }
 
     /// Jarvis has no menu bar menu, so the standard editing shortcuts are routed here.
@@ -606,9 +670,41 @@ final class OrbPanel: NSPanel {
     func endTyping() {
         model.draft = ""
         model.typing = false
-        orderOut(nil)  // gives the keyboard back to the app you were using
+        giveKeyboardBack()
         refreshVisibility()
-        if wantsVisible { orderFrontRegardless() }
+    }
+
+    /// Hands the keyboard back to the app you were using, without the orb blinking.
+    private func giveKeyboardBack() {
+        let alpha = alphaValue
+        orderOut(nil)
+        if wantsVisible { orderFrontRegardless(); alphaValue = alpha }
+    }
+
+    /// A card button: links open in the browser and copies go to the clipboard right here; "say" is sent to the core,
+    /// which treats it exactly like something you typed (so confirmations and safety checks still apply).
+    func perform(_ a: CardAction) {
+        guard a.isSafe else { return }
+        switch a.kind {
+        case .url:
+            if let u = URL(string: a.value) { NSWorkspace.shared.open(u) }
+        case .copy:
+            OrbView.copy(a.value)
+        case .say:
+            onCardAction?(a)
+        }
+    }
+
+    /// A card for the reply being given. It sits with that reply and survives the text growing sentence by sentence.
+    func showCard(_ card: CardData) {
+        model.dismissed = false
+        comeBack()
+        if model.messages.last == nil || model.messages.last!.fromUser {
+            model.messages.append(ChatLine(fromUser: false, text: ""))
+        }
+        model.messages[model.messages.count - 1].cards.append(card)
+        touch()
+        refreshVisibility()
     }
 
     func sendText(_ t: String) {
@@ -653,6 +749,11 @@ final class OrbPanel: NSPanel {
         guard let f = Self.screen(containing: orbCenter)?.visibleFrame else { return }
         model.alignRight = orbCenter.x > f.midX
         model.alignBottom = orbCenter.y < f.midY
+        let reach = Self.pad + Self.orbHalf
+        let windowW = model.alignRight ? orbCenter.x + reach - f.minX : f.maxX - (orbCenter.x - reach)
+        let windowH = model.alignBottom ? f.maxY - (orbCenter.y - reach) : orbCenter.y + reach - f.minY
+        let room = CGSize(width: floor(windowW - 2 * Self.pad), height: floor(windowH - 2 * Self.pad - Self.orbHalf * 2 - 4))
+        if room != model.room { model.room = room }
     }
 
     private func relayout() {
@@ -750,14 +851,20 @@ final class OrbPanel: NSPanel {
             DispatchQueue.main.async { self.model.showQueue.toggle(); self.refreshVisibility() }
         case "hide":
             comeBack(); model.dismissed = true; model.notice = ""; model.showQueue = false
+            if isKeyWindow { giveKeyboardBack() }
             clearHistoryWhenGone()
             flashUntil = .distantPast; lingerUntil = .distantPast; clearWork?.cancel(); refreshVisibility()
         case "toggle_card":
-            if model.ghost { comeBack(); touch() } else if model.cardVisible {
-                model.dismissed = true; lingerUntil = .distantPast
+            // Clicking the orb opens the chat (with the type box ready); clicking it again closes it.
+            if model.cardVisible && !model.ghost {
+                model.dismissed = true; lingerUntil = .distantPast; model.showQueue = false
                 clearHistoryWhenGone()
+                if isKeyWindow { giveKeyboardBack() }
             } else {
+                comeBack()
                 model.dismissed = false; if !model.messages.isEmpty { touch() }
+                model.showQueue = !model.queue.isEmpty
+                beginTyping()
             }
             refreshVisibility()
         case "show":
@@ -837,7 +944,7 @@ final class OrbPanel: NSPanel {
         } else {
             model.messages.append(ChatLine(fromUser: false, text: text))
         }
-        model.messages.removeAll { !$0.fromUser && $0.text.isEmpty && $0.rich == nil && $0.id != model.messages.last?.id }
+        model.messages.removeAll { !$0.fromUser && $0.text.isEmpty && $0.rich == nil && $0.cards.isEmpty && $0.id != model.messages.last?.id }
         if model.messages.count > 8 { model.messages.removeFirst(model.messages.count - 8) }
         touch()
         refreshVisibility()
@@ -894,6 +1001,7 @@ struct CopyButton: View {
 struct ReplyView: View {
     let line: ChatLine
     let conversation: () -> String
+    var onCardAction: (CardAction) -> Void = { _ in }
     @State private var hovering = false
 
     var body: some View {
@@ -903,13 +1011,13 @@ struct ReplyView: View {
                 RichView(blocks: RichMarkdown.parse(line.text), bodySize: 14)
             }
             if let rich = line.rich { RichView(blocks: RichMarkdown.parse(rich)) }
+            ForEach(line.cards) { CardView(card: $0, onAction: onCardAction) }
         }
         .textSelection(.enabled)
         .padding(.trailing, 4)
         .overlay(alignment: .bottomTrailing) {
-            if hovering && (!line.text.isEmpty || line.rich != nil) {
+            if hovering && (!line.text.isEmpty || line.rich != nil || !line.cards.isEmpty) {
                 CopyButton(help: "Copy this reply") { OrbView.plain(line) }
-                    .background(RoundedRectangle(cornerRadius: 5).fill(Color(white: 0.16)))
                     .offset(x: 4, y: 4)
             }
         }
