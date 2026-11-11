@@ -104,3 +104,42 @@ def mentions_wake_word(text: str, word: str = "jarvis") -> bool:
     from rapidfuzz import fuzz
 
     return any(fuzz.ratio(tok, w) >= 70 for w in (word,) for tok in re.findall(r"[a-z']+", text.lower()))
+
+
+# Words a sentence cannot sensibly end on. If you stop right after one, you paused to think; you did not finish.
+_DANGLING = frozenset(
+    "and but or to the a an of with for my your um uh umm uhh er because if when while".split()
+)
+
+
+def looks_unfinished(text: str) -> bool:
+    """Did the speaker probably pause mid-sentence ("open the", "set a timer for", "call mom and")?"""
+    t = text.strip().lower()
+    if not t or t[-1] in ".?!":
+        return False
+    words = re.findall(r"[a-z']+", t)
+    if len(words) < 2:
+        return False
+    return t[-1] in ",-\u2026" or words[-1] in _DANGLING
+
+
+_OPEN_ENDERS = _DANGLING | frozenset(
+    "i'm you're we're they're it's that's he's she's there's what's i'll you'll we'll i'd you'd we'd i've you've we've "
+    "is are was were am will would could should can gonna going so then also like just really actually basically".split()
+)
+
+
+def is_trailing_fragment(text: str) -> bool:
+    """A sentence that stops on a word that cannot end one ("I'm going to", "If you're", "and the"): half a thought, not a request.
+
+    Heard after the extra wait for the rest, it was never finished, so Jarvis lets it go instead of answering it."""
+    t = text.strip().lower().rstrip(".,\u2026-\u2013 ")
+    if not t or t[-1] in "?!":
+        return False
+    words = re.findall(r"[a-z']+", t)
+    return bool(words) and words[-1].replace("\u2019", "'") in _OPEN_ENDERS
+
+
+def needs_clarification(avg_logprob: float | None, text: str, threshold: float) -> bool:
+    """Is the recogniser unsure enough about a real request that it is worth asking "did you say ...?" first?"""
+    return avg_logprob is not None and avg_logprob < threshold and len(text.split()) >= 2

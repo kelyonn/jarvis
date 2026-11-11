@@ -70,6 +70,7 @@ class Rig:
         self.cfg.activation.duck_media = False  # never touch the real Spotify from a test
         if cfg is None:
             self.cfg.activation.wake_gate_rms = 0  # tests feed silence frames and expect the wake word to see them
+            self.cfg.activation.space_to_interrupt = False  # these tests drive the voice-interruption code, which is kept
         self.frontend = FakeFrontend(auto_finish=auto_finish)
         self.llm = ScriptedLLM(replies or ["Good evening, sir."])
         self.assistant = assistant or Assistant.create(self.cfg, llm=self.llm, text_only=True)

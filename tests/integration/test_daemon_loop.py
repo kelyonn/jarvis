@@ -948,3 +948,50 @@ async def test_typed_text_stops_a_reply_in_progress_and_answers_prompts():
         assert await asyncio.wait_for(answer, 5) is True  # a typed yes counts like a spoken one
     finally:
         await rig.stop()
+
+
+async def test_space_mode_does_not_listen_while_jarvis_talks_and_space_interrupts():
+    from jarvis_core.config import Config
+
+    cfg = Config()
+    cfg.activation.wake_gate_rms = 0
+    cfg.activation.space_to_interrupt = True
+    rig = Rig(auto_finish=False, cfg=cfg, stt_texts=["tell me a story", "open mail"])
+    rig.frontend.supports_aec = True  # the strongest case for voice interruption: it is still off in this mode
+    await rig.start()
+    try:
+        await rig.wake_and_speak()
+        await rig.wait_state(State.SPEAKING)
+        assert not rig.daemon._voice_barge_ok() and not rig.daemon._wants_capture()  # the mic is closed while it talks
+        await rig.feed(SPEECH, 40)  # you talk over it: it does not hear you
+        assert rig.daemon.state == State.SPEAKING
+        rig.daemon.on_hotkey("down")  # you press and hold Space
+        await rig.wait_state(State.LISTENING)
+        assert ("stop_audio",) in rig.frontend.log  # it stopped talking the moment you pressed
+        await rig.feed(SPEECH, 10)
+        rig.daemon._hotkey_down_at -= 1.0  # held for a while
+        rig.daemon.on_hotkey("up")  # you let go: whatever you said is acted on
+        await rig.wait_state(State.SPEAKING, State.FOLLOW_UP, State.THINKING)
+        assert rig.stt.calls == 2
+    finally:
+        await rig.stop()
+
+
+async def test_space_mode_is_on_by_default_and_tells_the_shell():
+    from jarvis_core.config import Config
+    from jarvis_core.frontend import FakeFrontend
+
+    assert Config().activation.space_to_interrupt is True
+    rig = Rig()
+    assert rig.frontend.options == {"space_to_interrupt": False}  # the rig turns it off; real config sends true
+    d_cfg = Config()
+    fe = FakeFrontend()
+    from jarvis_core.assistant import Assistant
+    from jarvis_core.brain.llm import ScriptedLLM
+    from jarvis_core.daemon import Daemon, Hooks
+    from fakes import FakeSTT, FakeTTS, FakeWake
+    from jarvis_core.voice.vad import EnergyVAD
+
+    Daemon(d_cfg, fe, assistant=Assistant.create(d_cfg, llm=ScriptedLLM(["ok"]), text_only=True), stt=FakeSTT(), tts=FakeTTS(),
+           wake=FakeWake(), vad_factory=EnergyVAD, hooks=Hooks())
+    assert fe.options == {"space_to_interrupt": True}

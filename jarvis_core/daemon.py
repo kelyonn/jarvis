@@ -26,6 +26,8 @@ from jarvis_core.voice.stt import filter_transcript
 from jarvis_core.voice.turn import (
     is_sleep_phrase,
     is_stop_phrase,
+    looks_unfinished,
+    needs_clarification,
     parse_confirmation,
     strip_wake_phrase,
 )
@@ -75,6 +77,7 @@ class Daemon:
     ) -> None:
         self.cfg = cfg
         self.frontend = frontend
+        frontend.options = {"space_to_interrupt": bool(cfg.activation.space_to_interrupt)}
         self.assistant = assistant
         self.stt = stt
         self.tts = tts
@@ -140,7 +143,45 @@ class Daemon:
         self.last_reply_text = ""
         self.last_activity = clock()
         self._tasks: set[asyncio.Task] = set()
+        from jarvis_core.metrics import Metrics
+
+        self.metrics = Metrics()
+        self._carry: bytes | None = None  # the first half of a sentence you paused in, while we wait for the rest
+        self._extended = False
+        self.last_confidence: float | None = None  # the recogniser's own confidence in the last thing it heard
+        self._t_speech_end: float | None = None  # when you last stopped talking, for the delay you feel
+        self._metrics_idle_at = clock()
+        self._aec = None
+        self._aec_ref = None
+        if cfg.activation.aec and not frontend.supports_aec:
+            self._start_aec()
         frontend.events = self
+
+    # ------------------------------------------------------------------ echo cancellation
+
+    def _start_aec(self) -> None:
+        """Learn the room's echo of what we play and subtract it from the microphone (see voice/aec.py)."""
+        from jarvis_core.voice import aec
+
+        self._aec = aec.EchoCanceller()
+        self._aec_ref = aec.ReferenceTimeline()
+        ref, fe = self._aec_ref, self.frontend
+        play_chunk, stop_audio = fe.play_chunk, fe.stop_audio
+
+        async def tapped_chunk(utt, pcm16, sample_rate):
+            ref.push(pcm16, sample_rate)  # the same audio the speakers are about to play is the filter's reference
+            await play_chunk(utt, pcm16, sample_rate)
+
+        async def tapped_stop():
+            ref.stop()
+            await stop_audio()
+
+        fe.play_chunk, fe.stop_audio = tapped_chunk, tapped_stop
+        log.info("echo cancellation is on (needs %.0f dB to be trusted for interrupting)", self.cfg.activation.aec_min_erle_db)
+
+    def _aec_trusted(self) -> bool:
+        """Is the echo canceller removing enough echo that your voice over Jarvis can be told apart from Jarvis?"""
+        return self._aec is not None and self._aec.erle_db >= self.cfg.activation.aec_min_erle_db
 
     # ------------------------------------------------------------------ run
 
@@ -352,17 +393,22 @@ class Daemon:
             # Siri-style: stay able to hear "Hey Jarvis" while it thinks and talks, so you can interrupt it. The mic is
             # held for the whole turn on purpose: closing it between steps makes Bluetooth earbuds flip between call and
             # music mode, which cuts the reply off mid-sentence.
-            if a.wake_interrupt and self.wake:
+            if a.wake_interrupt and not a.space_to_interrupt and self.wake:
                 return True
         return False
 
     def _voice_barge_ok(self) -> bool:
         a = self.cfg.activation
-        if not a.barge_in:
+        if not a.barge_in or a.space_to_interrupt:  # Space is how you interrupt now: Jarvis does not listen while it talks
             return False
         # Speakers have no echo cancellation: Jarvis's own voice would trip it, so there only an enrolled voiceprint
         # (checked in _is_owner before anything is interrupted) can be trusted to tell you from Jarvis.
-        return self.frontend.supports_aec or self._headphones or (a.barge_in_speakers and self._speaker_check_on())
+        return (
+            self.frontend.supports_aec
+            or self._headphones
+            or self._aec_trusted()
+            or (a.barge_in_speakers and self._speaker_check_on())
+        )
 
     async def _refresh_output_kind(self) -> None:
         """Is audio going to headphones/earbuds? Then the mic can't hear Jarvis, so talking over it can interrupt."""
@@ -544,9 +590,24 @@ class Daemon:
                 log.info("mic: %d frames, rms=%.0f peak=%d, best wake score=%.2f (threshold %.2f)",
                          self._stat_n, (self._stat_sq / self._stat_n) ** 0.5, self._stat_peak, self._stat_wake,
                          self.cfg.activation.wake_threshold)
+            if self._aec is not None and self._aec_ref.playing:
+                log.info("aec: removing %.0f dB of echo (%d frames held back while you spoke)", self._aec.erle_db, self._aec.frozen)
+            if self.sm.state == State.IDLE and now - self._metrics_idle_at >= 60:
+                self._metrics_idle_at = now
+                self._sample_idle_cost()
             self._check_dead_mic()
             self._stat_at, self._stat_sq, self._stat_n, self._stat_peak, self._stat_wake = now, 0.0, 0, 0, 0.0
         return rms
+
+    def _sample_idle_cost(self) -> None:
+        try:
+            import psutil
+
+            proc = psutil.Process()
+            self.metrics.record("cpu_pct", proc.cpu_percent(interval=None))
+            self.metrics.record("rss_mb", proc.memory_info().rss / 1e6)
+        except Exception:
+            log.debug("idle cost not sampled", exc_info=True)
 
     def _check_dead_mic(self) -> None:
         """A microphone that delivers only zeros (earbuds that reconnected, a device that vanished) never fails loudly.
@@ -589,6 +650,10 @@ class Daemon:
         return False
 
     async def _handle_frame(self, frame: bytes) -> None:
+        if self._aec is not None:
+            from jarvis_core.voice.aec import process_frame
+
+            frame = process_frame(self._aec, self._aec_ref, frame)
         st = self.sm.state
         self.preroll.push(frame)
         rms = self._mic_stats(frame)
@@ -615,6 +680,7 @@ class Daemon:
             if (
                 a.listen_mode == "wake_word"
                 and a.wake_interrupt
+                and not a.space_to_interrupt
                 and self.wake
                 and not self._muted
                 and self.wake.process(frame)
@@ -646,24 +712,27 @@ class Daemon:
         if self.wake:
             self.wake.reset()
         timeout = no_speech_timeout_s or (a.follow_up_seconds if followup else a.no_speech_timeout_s)
-        self._endpointer = Endpointer(
-            EndpointerParams(
+        if trigger == "dictate":
+            # Only letting go of the key ends dictation: a long pause to think must not cut you off.
+            params = EndpointerParams(end_silence_ms=120_000.0, no_speech_timeout_s=30.0, max_s=120.0)
+        else:
+            params = EndpointerParams(
                 end_silence_ms=a.follow_up_end_silence_ms if followup else a.end_silence_ms,
                 no_speech_timeout_s=timeout,
                 max_s=a.max_utterance_s,
             )
-        )
+        self._endpointer = Endpointer(params)
         self._deaf_frames = 0
         if followup:
             self._deaf_frames = 25  # 0.5 s of audio: the tail of Jarvis's own voice (and Bluetooth lag) is still in the air
         self._utt = bytearray(b"" if followup else self.preroll.tail(preroll_ms))
         self._followup = followup
         self._utt_trigger = trigger
-        self._ptt = trigger == "hotkey"
+        self._ptt = trigger in ("hotkey", "dictate")
         if self._capture is None:
             self.sm.go(State.FOLLOW_UP if followup else State.LISTENING)
         self._sync_capture()
-        if trigger in ("wake", "hotkey"):
+        if trigger in ("wake", "hotkey", "dictate"):
             await self.frontend.earcon("listen")
 
     async def _listen_frame(self, frame: bytes) -> None:
@@ -737,6 +806,11 @@ class Daemon:
 
     async def _no_speech(self) -> None:
         self._endpointer = None
+        if self._carry is not None:  # no more came: what you said before the pause is the whole request
+            audio, self._carry, self._extended = self._carry, None, True
+            self.sm.go(State.TRANSCRIBING)
+            self._turn_task = asyncio.create_task(self._process_utterance(audio), name="turn")
+            return
         if self._capture is not None:
             if not self._capture.done():
                 self._capture.set_result(None)
@@ -746,7 +820,10 @@ class Daemon:
         self.sm.go(State.IDLE)
 
     async def _end_utterance(self) -> None:
+        self._t_speech_end = self._clock()
         audio = bytes(self._utt)
+        if self._carry is not None:  # the rest of a sentence you paused in: hear it as one request
+            audio, self._carry, self._extended = self._carry + audio, None, True
         self._utt = bytearray()
         self._endpointer = None
         if self._capture is not None:
@@ -799,6 +876,7 @@ class Daemon:
     async def _transcribe(self, audio: bytes) -> str:
         loop = asyncio.get_running_loop()
         t = await loop.run_in_executor(self._stt_pool, self.stt.transcribe, audio, 16000)
+        self.last_confidence = t.avg_logprob
         return filter_transcript(t, len(audio) / 32000)
 
     async def _transcribe_for_capture(self, audio: bytes) -> None:
@@ -849,6 +927,9 @@ class Daemon:
             if self._enroll is not None:
                 await self._enroll_turn(audio)
                 return
+            if self._utt_trigger == "dictate":
+                await self._finish_dictation(audio)
+                return
             # Pressing the hotkey means you are at the keyboard: never lock yourself out of your own Jarvis.
             loud_unsure = False
             self.last_speaker_score = None  # set again by the check below
@@ -865,7 +946,9 @@ class Daemon:
                     await self._resume_followup_or_idle()
                     return
             try:
+                t_stt = self._clock()
                 text = await self._transcribe(audio)
+                self.metrics.record("stt_ms", (self._clock() - t_stt) * 1000, audio_s=round(len(audio) / 32000, 1))
             except Exception:
                 log.exception("transcription failed")
                 await self.frontend.earcon("error")
@@ -901,6 +984,15 @@ class Daemon:
                 log.info("ignored echo of my own voice: %r", text[:80])
                 await self._resume_followup_or_idle()
                 return
+            if await self._wait_for_the_rest(audio, text):
+                return
+            from jarvis_core.voice.turn import is_trailing_fragment
+
+            if (self.cfg.activation.extend_unfinished and self._capture is None and self._utt_trigger != "hotkey"
+                    and is_trailing_fragment(text)):
+                log.info("dropped an unfinished fragment, not a request: %r", text[:60])
+                await self._resume_followup_or_idle()
+                return
             log.info("heard: %r", text)
             if is_stop_phrase(text):
                 await self.frontend.earcon("done")
@@ -911,6 +1003,8 @@ class Daemon:
                 await self.speaker.speak("Very good, sir. I'll stay quiet until you call.")
                 self.sm.go(State.IDLE)
                 return
+            if not await self._sure_enough(text):
+                return
             await self._run_turn(text)
         except asyncio.CancelledError:
             raise
@@ -919,6 +1013,65 @@ class Daemon:
             await self.frontend.earcon("error")
             if self.sm.state not in (State.PAUSED,):
                 self.sm.go(State.IDLE)
+
+    async def _finish_dictation(self, audio: bytes) -> None:
+        """Type what was dictated into the front app. No assistant, no spoken reply."""
+        from jarvis_core.skills.ui_tools import app_rule
+        from jarvis_core.voice.dictation import clean_dictation
+
+        try:
+            text = clean_dictation(await self._transcribe(audio))
+            if not text:
+                return
+            app = str((await self.frontend.request("ax.frontmost", {}, timeout=5)).get("app", ""))
+            if app_rule(self.cfg, app) == "never":
+                await self.frontend.caption(f"I don't type into {app}.", False)
+                return
+            await self.frontend.request("input.type", {"text": text}, timeout=30)
+            log.info("dictated %d characters into %s", len(text), app or "the front app")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.warning("dictation failed: %s", e)
+            await self.frontend.caption(f"I couldn't type that: {str(e)[:80]}", False)
+            await self.frontend.earcon("error")
+        finally:
+            if self.sm.state not in (State.PAUSED,):
+                self.sm.go(State.IDLE)
+
+    async def _wait_for_the_rest(self, audio: bytes, text: str) -> bool:
+        """You stopped right after "open the" or "set a timer for". Hold the first half and listen a little longer.
+        True when it is waiting, so the caller must not act yet."""
+        a = self.cfg.activation
+        if (
+            self._extended
+            or not a.extend_unfinished
+            or self._capture is not None
+            or self._utt_trigger == "hotkey"  # push-to-talk ends when you let go: that is already your decision
+            or not looks_unfinished(text)
+            or len(audio) > 20 * 32000
+        ):
+            self._extended = False
+            return False
+        log.info("looks unfinished (%r): listening %.1f s more", text[-40:], a.extend_wait_s)
+        trigger = self._utt_trigger
+        self._carry = audio
+        await self._begin_listening("extend", followup=True, no_speech_timeout_s=a.extend_wait_s)
+        self._utt_trigger, self._deaf_frames = trigger, 0  # judged as the request it is, and no deaf spell after the pause
+        return True
+
+    async def _sure_enough(self, text: str) -> bool:
+        """When the recogniser is unsure what it heard, check before acting. Never for a stop or a sleep, never twice."""
+        threshold = self.cfg.voice.low_confidence_logprob
+        if threshold >= 0 or not needs_clarification(self.last_confidence, text, threshold):
+            return True
+        log.info("unsure what I heard (confidence %.2f): %r", self.last_confidence, text[:60])
+        if await self.ask_confirmation(f"I think you said, {text}. Is that right?"):
+            return True
+        self._followup_until = self._clock() + self.cfg.activation.follow_up_seconds
+        await self.speaker.speak("Sorry about that, sir. Say it again.")
+        await self._resume_followup_or_idle()
+        return False
 
     _DISMISS = re.compile(
         r"^(?:(?:hey |ok |okay )?jarvis[,.]? )?(?:please )?(?:"
@@ -945,12 +1098,20 @@ class Daemon:
         self.sm.go(State.THINKING)
         await self.frontend.caption(text, True)
         reply = ""
+        t_turn = self._clock()
+        heard_at, self._t_speech_end = self._t_speech_end, None
+
+        def first_audio() -> None:
+            now = self._clock()
+            self.metrics.record("think_ms", (now - t_turn) * 1000)
+            if heard_at is not None and now - heard_at < 120:
+                self.metrics.record("to_first_audio_ms", (now - heard_at) * 1000)
+            self.sm.go(State.SPEAKING)
+
         try:
             stream = self.assistant.respond_stream(text)
             self.speaker.cap_source = lambda: getattr(self.assistant, "speech_cap", None)
-            reply = await self.speaker.speak_stream(
-                stream, on_first_audio=lambda: self.sm.go(State.SPEAKING)
-            )
+            reply = await self.speaker.speak_stream(stream, on_first_audio=first_audio)
         except LLMAuthError:
             reply = await self.speaker.speak(
                 "I have no API key yet, sir. Run jarvisd set key to store it."
@@ -959,6 +1120,7 @@ class Daemon:
             log.warning("LLM unavailable: %s", e)
             reply = await self.speaker.speak("I'm having trouble reaching my servers, sir.")
         self.last_reply_text = reply
+        self.metrics.record("turn_ms", (self._clock() - t_turn) * 1000)
         for h in self.hooks.on_turn_done:
             await self._safe(h, text, reply)
         outcome = getattr(self.assistant, "last_turn", None)
@@ -1185,6 +1347,21 @@ class Daemon:
                 await self._end_utterance()
         elif action == "long_press":
             await self.cancel_everything()
+        elif action == "dictate_down":
+            if st in (State.IDLE, State.FOLLOW_UP) and self.cfg.activation.dictation:
+                if self._muted:
+                    self._muted = False
+                    await self.frontend.set_mic_enabled(True)
+                self._hotkey_down_at = self._clock()
+                await self._begin_listening("dictate")
+        elif action == "dictate_up":
+            if self._utt_trigger == "dictate" and st == State.LISTENING and self._endpointer:
+                if not self._endpointer.started:  # you never said anything (a tap, or silence): nothing to type
+                    self._endpointer = None
+                    self._utt = bytearray()
+                    self.sm.go(State.IDLE)
+                else:
+                    await self._end_utterance()
 
     async def cancel_everything(self) -> None:
         if self.sm.state in (State.SPEAKING, State.ANNOUNCING, State.THINKING):
