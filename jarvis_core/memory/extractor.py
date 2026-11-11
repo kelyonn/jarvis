@@ -112,7 +112,10 @@ class Extractor:
                 if p.kind == "person":
                     fact = p
             try:
-                self.last_ids.append(self.memory.add(fact))
+                from jarvis_core.memory import reconcile
+
+                outcome = await reconcile.apply(self.memory, fact, judge=reconcile.llm_judge(self.llm))
+                self.last_ids.append(outcome.id)
             except ValueError:
                 continue
 

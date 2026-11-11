@@ -103,11 +103,13 @@ class Assistant:
         if memory is not None:
             try:
                 snip = getattr(memory, "snippets", None)
-                out["memory_snippets"] = snip(user_text, 5) if snip else [f.text for f in memory.search(user_text, k=5)]
+                from jarvis_core.memory.voice import second_person
+
+                out["memory_snippets"] = [second_person(t) for t in (snip(user_text, 5) if snip else [f.text for f in memory.search(user_text, k=5)])]
                 recent = getattr(memory, "recent_episodes", None)
                 if recent is not None and sum(1 for m in self.history.messages() if m.get("role") == "user") <= 1:
                     # A fresh conversation: remind the model what you last talked about, so you can pick it up.
-                    out["memory_snippets"] = [*out["memory_snippets"], *recent(3)]
+                    out["recent_talk"] = recent(3)
             except Exception:
                 pass
         return out

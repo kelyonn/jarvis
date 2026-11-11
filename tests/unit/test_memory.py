@@ -233,7 +233,7 @@ async def test_runtime_wires_memory_into_prompt_and_hooks():
     rtmod._attach_memory(rt, rig.llm)
     mem = rig.assistant.ctx.services["memory"]
     mem.add(Fact(text="The user's office is in Koramangala"))
-    assert rig.assistant._prompt_context("where is my office")["memory_snippets"] == ["The user's office is in Koramangala"]
+    assert rig.assistant._prompt_context("where is my office")["memory_snippets"] == ["Your office is in Koramangala"]  # spoken to them
     assert rig.daemon.hooks.on_turn_done
     cfg = Config()
     cfg.memory.enabled = False
