@@ -212,3 +212,7 @@ jarvis_core/
 <br>
 
 <sub>The Calendar and Contacts readers follow the schema handling in the open-source <a href="https://github.com/open-jarvis/OpenJarvis">OpenJarvis</a> connectors (Apache-2.0). Jarvis does not import or install OpenJarvis.</sub>
+
+## More features
+
+Newer features (Space to interrupt, rich cards, offline fallback, MCP, memory) are described in [docs/FEATURES.md](docs/FEATURES.md).
