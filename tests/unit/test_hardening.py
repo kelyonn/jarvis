@@ -78,3 +78,45 @@ async def test_terminal_refuses_protected_working_folder(tmp_path, apps_dir):
     tool = build_registry().get("run_command")
     assert tool.decide(ctx, {"command": "ls", "directory": ".ssh"}).action == "block"
     assert tool.decide(ctx, {"command": "ls", "directory": "Documents"}).action == "allow"
+
+
+async def test_daemon_stops_when_its_app_dies(monkeypatch):
+    import os
+
+    from jarvis_core import bootstrap
+
+    ppids = iter([4242, 4242, 4242, 1, 1])
+    monkeypatch.setattr(os, "getppid", lambda: next(ppids))
+    stopped = []
+    await bootstrap._watch_parent(lambda: stopped.append(True), interval=0)
+    assert stopped == [True]
+
+
+async def test_daemon_without_an_app_parent_does_not_watch(monkeypatch):
+    import os
+
+    from jarvis_core import bootstrap
+
+    monkeypatch.setattr(os, "getppid", lambda: 1)
+    stopped = []
+    await bootstrap._watch_parent(lambda: stopped.append(True), interval=0)
+    assert stopped == []
+
+
+def test_mail_phrases_go_straight_to_the_email_tool():
+    from jarvis_core.router import IntentRouter
+
+    r = IntentRouter.load()
+    for q in ["check my mail and show me the unread ones", "show me the unread emails", "what's in my inbox", "read my mail"]:
+        m = r.match(q)
+        assert m is not None and m.tool == "read_messages" and m.args == {"source": "gmail"}, q
+
+
+def test_unfinished_fragments_are_not_requests():
+    from jarvis_core.voice.turn import is_trailing_fragment
+
+    for t in ["I'm going to", "If you're", "I'm going to.", "and the", "so", "I think it's", "What's"]:
+        assert is_trailing_fragment(t), t
+    for t in ["open the pod bay doors", "what time is it", "stop", "yes", "thanks", "is it raining?", "set a timer for ten minutes",
+              "play the man who can't be moved", "turn it off", "call mom"]:
+        assert not is_trailing_fragment(t), t

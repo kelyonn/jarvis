@@ -147,7 +147,8 @@ class IntentRouter:
         t = normalise(text)
         if not t or len(t) > 90:
             return None
-        compound = re.match(r"^(?:open|launch|start) (?:spotify|music|apple music) (?:and |then )(?:play|put on) ", t)
+        compound = re.match(r"^(?:open|launch|start) (?:spotify|music|apple music) (?:and |then )(?:play|put on) ", t) or re.match(
+            r"^(?:check|read|open) (?:my |the )?(?:e-?mails?|mail|inbox) (?:and|then) (?:show|read|list|tell) (?:me )?(?:the |my |all )?(?:unread|new)(?: ones| e-?mails?| mails?)?$", t)
         if not compound and re.search(r"\b(?:and|then|also|after that)\b", t):
             return None  # multi-step requests belong to the agent
         for it in self.intents:

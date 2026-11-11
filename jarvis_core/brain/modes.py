@@ -17,7 +17,8 @@ Kind = str  # chat | action | lookup | explain | code | math | analysis | plan |
 
 _ACTION_VERBS = frozenset(
     "set open close quit play pause resume turn remind make start stop text message send call search find take save add remove "
-    "delete move snap put launch switch mute unmute lock schedule book reply connect disconnect skip shuffle create copy".split()
+    "delete move snap put launch switch mute unmute lock schedule book reply connect disconnect skip shuffle create copy change fix "
+    "edit replace update correct paste type".split()
 )
 _LEAD = frozenset("please can could would you jarvis hey hi okay ok just then now and also".split())
 
@@ -119,18 +120,18 @@ def complexity_of(text: str, kind: Kind) -> str:
 
 # kind -> (speech length, sampling temperature, base max_tokens)
 _PROFILE: dict[Kind, tuple[str, int, float, int]] = {
-    "chat": ("one to three short sentences", 4, 0.65, 350),
+    "chat": ("one or two short sentences", 3, 0.65, 350),
     "action": ("one short line", 2, 0.2, 300),
     "lookup": ("one or two sentences", 3, 0.25, 350),
-    "explain": ("three to five spoken sentences", 6, 0.45, 700),
+    "explain": ("two to four spoken sentences", 5, 0.45, 700),
     "code": ("one or two sentences", 2, 0.2, 1400),
     "math": ("one or two sentences", 2, 0.1, 900),
-    "analysis": ("three or four sentences", 4, 0.45, 900),
-    "plan": ("two or three sentences", 3, 0.4, 1000),
-    "troubleshoot": ("two to four sentences", 4, 0.3, 800),
+    "analysis": ("two or three sentences", 3, 0.45, 900),
+    "plan": ("one or two sentences", 2, 0.4, 1000),
+    "troubleshoot": ("one or two sentences: the cause, then the fix", 2, 0.3, 1400),
     "draft": ("one or two sentences about the draft", 2, 0.6, 900),
-    "summarize": ("three or four sentences, most important first", 5, 0.3, 700),
-    "creative": ("a few sentences", 5, 0.9, 900),
+    "summarize": ("two or three sentences, most important first", 4, 0.3, 700),
+    "creative": ("two or three sentences", 4, 0.9, 900),
 }
 
 
@@ -200,15 +201,15 @@ _KIND_RULES = {
     "action": "The user wants something done: call the tool, then confirm in one short line. Do not explain.",
     "lookup": "Answer directly with the fact first. If it could have changed since your training (news, prices, scores, weather, 'latest'), use a tool to check; if you cannot, say you are unsure.",
     "explain": "Explain it like a clever friend: the core idea first, then one concrete example or analogy. Skip history and caveats unless they matter.",
-    "analysis": "Give a real recommendation, not a survey. Say what you would do and why, name the main risk, and offer to go deeper.",
+    "analysis": "Give a real recommendation, not a survey: what you would do and the one reason why.",
     "plan": "Give a plan the user can start on now: the first step is specific and doable today. Keep the rest short.",
-    "troubleshoot": "Diagnose before prescribing: name the most likely cause first, then the quickest fix to try, then what to check if that fails. You may look with read-only tools, but never change a setting just to test a theory; ask first.",
+    "troubleshoot": "Look before you answer (read-only tools, read_screen_code for code on screen), then name the one most likely cause and the fix. Skip lists of other things it could be. Never change a setting just to test a theory; ask first.",
     "draft": "Write the draft in the user's voice, show it on screen, and say in one sentence what it does. Ask before sending anything; you only ever draft.",
     "summarize": "Summarise, never recite. Lead with what matters or is urgent, group by person or topic, and offer to read details.",
     "creative": "Be inventive and specific, not generic. Offer a few distinct options rather than one safe one.",
     "chat": "Keep it natural and brief. Match their mood.",
     "math": "Get the numbers right: use the calculate tool for anything beyond a trivial sum, and say the answer first.",
-    "code": "Correct, idiomatic, minimal code that runs as written. State any assumption in one line.",
+    "code": "Correct, idiomatic, minimal code that runs as written. If it is about code on their screen, read it first with read_screen_code and keep their approach.",
 }
 
 _SCREEN_KIND = {"code": "code", "math": "math", "analysis": "table", "plan": "steps", "troubleshoot": "steps", "draft": ""}

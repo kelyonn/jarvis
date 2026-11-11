@@ -17,7 +17,7 @@ from jarvis_core.interfaces import TextDelta, ToolCallEvent
 from jarvis_core.policy.audit import AuditLog
 from jarvis_core.policy.shell_policy import classify_command, is_protected_path
 from jarvis_core.router import IntentRouter, normalise
-from jarvis_core.skills.base import CmdResult, Risk, ToolContext, validate_args
+from jarvis_core.skills.base import CmdResult, Decision, Risk, ToolContext, validate_args
 from jarvis_core.skills.registry import build_registry
 
 
@@ -849,8 +849,48 @@ async def test_yes_puts_a_pending_draft_in_the_app_without_trusting_the_model(tm
         untrusted_output = False
 
         def decide(self, *_):
-            return None
+            return Decision.allow()
 
     agent.registry.get = lambda name, _g=agent.registry.get: T() if name == "insert_draft" else _g(name)
     out = await collect(agent.respond("send it"))
     assert out.startswith("The draft is ready in WhatsApp") and "never send" in out and "draft" not in ctx.state
+
+
+async def test_final_tool_result_is_the_reply_with_one_model_call(tmp_path, apps_dir):
+    agent, llm, ctx = make_agent(tmp_path, apps_dir, [[call("edit_screen_code", {"code": "x = 1\n"})], "should never be asked"])
+
+    class Ed:
+        async def replace(self, code=None, **kw):
+            return "Done. Cmd+Z undoes it."
+
+    ctx.services["code_editor"] = Ed()
+    out = await collect(agent.respond("change it for me"))
+    assert out == "Done. Cmd+Z undoes it." and len(llm.calls) == 1
+
+
+async def test_final_tool_error_still_goes_back_to_the_model(tmp_path, apps_dir):
+    agent, llm, ctx = make_agent(tmp_path, apps_dir, [[call("edit_screen_code", {"code": "x"})], "I couldn't find the editor."])
+
+    class Ed:
+        async def replace(self, code=None, **kw):
+            from jarvis_core.errors import SkillError
+            raise SkillError("no editor")
+
+    ctx.services["code_editor"] = Ed()
+    out = await collect(agent.respond("change it for me"))
+    assert "couldn't find the editor" in out and len(llm.calls) == 2
+
+
+async def test_fake_edit_claim_without_a_tool_is_retried(tmp_path, apps_dir):
+    agent, llm, ctx = make_agent(tmp_path, apps_dir, [
+        "Done, changed depth -= 1 to depth += 1 on line 7.",
+        [call("edit_screen_code", {"find": "depth -= 1", "replace": "depth += 1"})],
+    ])
+
+    class Ed:
+        async def replace(self, code=None, **kw):
+            return "Done. Cmd+Z undoes it."
+
+    ctx.services["code_editor"] = Ed()
+    out = await collect(agent.respond("change depth minus equals one to depth plus equals one in my code"))
+    assert out == "Done. Cmd+Z undoes it." and len(llm.calls) == 2

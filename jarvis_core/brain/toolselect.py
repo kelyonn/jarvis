@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import re
 
-CORE = frozenset({"apps", "web", "memory", "sysinfo"})
+CORE = frozenset({"apps", "web", "memory", "sysinfo", "mcp"})  # "mcp": tools from servers in ~/.jarvis/mcp.json, if any
 STICKY_TURNS = 2
 
 _KEYWORDS: dict[str, str] = {
     "messaging": r"messag|text (?:him|her|them|my|mom|dad)|whatsapp|imessage|e-?mail|gmail|inbox|linkedin|reply|draft|\bdm\b|\bvip|"
                  r"unread|tell (?:him|her|them)|let .{1,20} know|write to|compose",
     "windows": r"window|snap|half|fullscreen|full screen|maximi[sz]e|minimi[sz]e|tile|left side|right side|move this",
-    "files": r"\bfiles?\b|\bcopy (?:the |this |that )?(?:file|folder)|duplicate|folder|document|download|desktop|trash|finder|\bpdf\b|rename|directory|find my",
+    "files": r"\bfiles?\b|\bcopy (?:the |this |that )?(?:file|folder)|duplicate|folder|document|download|desktop|trash|finder|\bpdf\b|rename|directory|find my|\bundo\b|put (?:it|that|them) back",
     "media": r"music|\bplay\b|pause|song|track|spotify|volume|\bmute|louder|quieter|sound|podcast|\bskip|next|previous|playlist",
     "display": r"brightness|dark mode|light mode|lock (?:the |my )?(?:screen|mac)|display|screen off",
     "power": r"battery|\bsleep\b|restart|shut ?down|reboot|empty (?:the )?trash|awake|caffeinate",
@@ -33,7 +33,10 @@ _KEYWORDS: dict[str, str] = {
     "focus": r"\bfocus\b|do not disturb|don'?t disturb|\bdnd\b",
     "calendar": r"calendar|appointment|meeting|schedule|\bevent|book (?:a|an|me)\b",
     "drive": r"\bdrive\b|google docs?|\bdocs?\b|spreadsheet|\bsheets?\b|slides|presentation|my files in",
-    "vision": r"screen|\bsee\b|look at|this error|explain this|computer use|click|on my display|what am i looking",
+    "vision": r"screen|\bsee\b|look at|this error|explain this|computer use|click|on my display|what am i looking|\bcode\b|"
+              r"leetcode|hackerrank|editor|\bline \d+|\b(?:change|fix|edit|type|correct|update) (?:it|this|that|the code|my code)\b",
+    "ui": r"\bclick|\bpress\b|\btap\b|button|\bmenu\b|checkbox|toggle|tick |untick|text field|type (?:in|into)|fill (?:in|out)|"
+          r"turn (?:on|off) the|switch (?:on|off) the|select the|\btab\b|scroll|dropdown|slider",
     "math": r"calculat|comput|solve|equation|integral|derivative|differentiat|simplif|factori|expand|limit of|\d\s*[-+*/^x×÷]\s*\d|\d\s*%|percent|square root|sqrt|cube root|log\b|\bsin\b|\bcos\b|\btan\b|how much is|what(?:'s| is) \d",
     "briefing": r"brief|weather|forecast|rain|market|stock|nifty|sensex|nasdaq|s&p|bitcoin|btc|ethereum|\beth\b|news|headline|"
                 r"calendar|meeting|schedule|agenda|today|tomorrow|event",

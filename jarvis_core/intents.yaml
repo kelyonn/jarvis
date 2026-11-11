@@ -446,9 +446,18 @@
   args: {}
   reply: "{result}"
 
+- name: recall_me
+  patterns:
+    - '^(?:tell me |what do you know |what all do you know )(?:everything |all )?(?:you know |that you know )?about me$'
+    - '^(?:who am i|who(?:s| is) this|tell me who i am)$'
+    - '^(?:what do you know about me|what do you remember about me|what have you learned about me)$'
+  tool: recall
+  args: {}
+  reply: "{result}"
+
 - name: battery
   patterns:
-    - '^(?:how(?:s| is) (?:my |the )?battery(?: doing)?|battery(?: level| status| percentage)?|what(?:s| is) (?:my |the )?battery(?: level| at)?|how much battery (?:do i have|is left)(?: left)?)$'
+    - '^(?:how(?:s| is) (?:my |the )?battery(?: doing)?|battery(?: level| status| percentage| percent| charge| %)?|what(?:s| is) (?:my |the )?battery(?: level| at| percentage| percent| charge| status)?|how much (?:battery|charge)(?: do i have| is left)?(?: left)?|how much (?:battery )?percentage(?: do i have| is left)?(?: left)?)$'
   tool: battery_status
   args: {}
   reply: "{result}"
@@ -730,6 +739,9 @@
   patterns:
     - '^(?:read|check|show|any) (?:me )?(?:my |the )?(?:new |unread )?(?:e-?mails?|mail|inbox)$'
     - '^(?:do i have|have i got|are there) (?:any )?(?:new |unread )?(?:e-?mails?|mail)$'
+    - '^(?:check|read|show|open|pull up|list)(?: me)? (?:my |the )?(?:new |unread )?(?:e-?mails?|mails?|inbox)(?: and .*)?$'
+    - '^(?:show|list|read|tell)(?: me)? (?:my |the |all )?(?:the )?unread(?: e-?mails?| mails?| ones)?$'
+    - '^what(?:s| is| are) (?:in )?my (?:unread )?(?:e-?mails?|mail|inbox)$'
   tool: read_messages
   args: {source: gmail}
   reply: "{result}"

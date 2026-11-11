@@ -181,9 +181,9 @@ class Workspace:
 def events_all(start: datetime, end: datetime, query: str = "", limit: int = 30) -> list[Event]:
     """Calendar events from every signed-in Google account, merged and de-duplicated. Accounts that fail are skipped;
     the error is raised only when none of them worked."""
-    from jarvis_core.adapters.google import list_accounts
-
     from concurrent.futures import ThreadPoolExecutor
+
+    from jarvis_core.adapters.google import list_accounts
 
     out: list[Event] = []
     seen: set[tuple[str, str]] = set()
